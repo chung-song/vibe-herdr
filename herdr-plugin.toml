@@ -1,0 +1,16 @@
+id = "ranolp.handsfree"
+name = "Handsfree"
+version = "0.2.0"
+min_herdr_version = "0.7.5"
+description = "Local Whisper dictation into the focused agent pane"
+platforms = ["macos"]
+
+# Local build only. No remote executable is fetched by Herdr on link.
+
+[[startup]]
+command = ["target/release/herdr-handsfree", "ensure-daemon"]
+
+[[actions]]
+id = "toggle-dictation"
+title = "Toggle voice dictation"
+command = ["target/release/herdr-handsfree", "toggle", "dictation"]

@@ -1,0 +1,7 @@
+# Example fragment for your own Herdr config.toml; not installed automatically.
+# Check that prefix+d is free before applying this fragment.
+[[keys.command]]
+key = "prefix+d"
+type = "plugin_action"
+command = "ranolp.handsfree.toggle-dictation"
+description = "Toggle voice dictation"

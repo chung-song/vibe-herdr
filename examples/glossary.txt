@@ -1,0 +1,3 @@
+# Optional Whisper initial-prompt hints, one public non-sensitive term per line.
+ExampleName
+Mobility

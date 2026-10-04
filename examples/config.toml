@@ -1,0 +1,14 @@
+# Example only. Copy to a private Herdr plugin config directory outside this repo.
+# Build with --no-default-features --features whisper for these settings.
+whisper_model = "small"
+language = "ko"
+vad = "silero"
+# Additional amplitude threshold; 0 disables. Tune with your own microphone.
+min_speech_rms = 0.0
+# Empty string uses the macOS default input device; do not commit a personal name.
+microphone = ""
+input_gain = 1.0
+# Optional Herdr config modification; disabled by default.
+phase_accent = false
+# Optional spoken override; empty disables it. Without it, unsent drafts expire at 15s.
+end_word = ""

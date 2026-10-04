@@ -1,0 +1,16 @@
+/target/
+/config.toml
+/glossary.txt
+/jev.key
+*.key
+*.pem
+*.env
+.env*
+*.log
+*.wav
+*.onnx
+*.bin
+*.part
+.DS_Store
+PRIVATE_PREP_NOTES.md
+# Keep example files in examples/; no live credentials or device configuration here.
