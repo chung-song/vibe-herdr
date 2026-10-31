@@ -5,7 +5,9 @@ pub const SAMPLE_RATE: usize = 16_000;
 pub const FRAME: usize = crate::silero::CHUNK; // 512 samples = 32 ms
 const FRAME_MS: usize = FRAME * 1000 / SAMPLE_RATE;
 const PRE_ROLL_MS: usize = 300;
-const HANGOVER_MS: usize = 2_000;
+// Segmentation only, not permission to submit: the semantic/end-word gate
+// still decides whether an accumulated draft is a complete turn.
+const HANGOVER_MS: usize = 800;
 const MIN_SPEECH_MS: usize = 250;
 const MAX_UTTERANCE_MS: usize = 30_000;
 const RMS_THRESHOLD: f32 = 0.015;
@@ -152,6 +154,11 @@ impl Vad {
         self.in_speech
     }
 
+    /// Latest frame is voiced; unlike in_speech, excludes the EOS debounce.
+    pub fn voiced(&self) -> bool {
+        self.in_speech && self.silence_ms == 0
+    }
+
     /// Samples of the utterance under way that no earlier call returned, so a
     /// caller can transcribe it while the speaker is still talking instead of
     /// waiting out the hangover.
@@ -205,21 +212,31 @@ mod tests {
     }
 
     #[test]
-    fn two_second_pause_hands_segment_to_semantic_judge_without_short_pause_split() {
+    fn eos_debounce_keeps_short_pauses_but_finishes_in_800ms() {
         let mut vad = energy_vad();
         let loud = vec![0.5f32; FRAME];
         let quiet = vec![0.0f32; FRAME];
         for _ in 0..16 {
             assert!(vad.push(&loud).is_none());
         }
-        for _ in 0..62 {
+        // A natural 384 ms pause and continuation are one utterance.
+        for _ in 0..12 {
             assert!(vad.push(&quiet).is_none());
         }
+        for _ in 0..16 {
+            assert!(vad.push(&loud).is_none());
+        }
         assert!(vad.in_speech());
-        assert!(
-            vad.push(&quiet).is_some(),
-            "two-second pause must reach Jev promptly"
-        );
+        let mut elapsed_ms = 0;
+        loop {
+            elapsed_ms += super::FRAME_MS;
+            if vad.push(&quiet).is_some() {
+                break;
+            }
+            assert!(elapsed_ms < 4_000, "utterance never completed");
+        }
+        eprintln!("measured EOS silence: {elapsed_ms} ms (sample clock)");
+        assert_eq!(elapsed_ms, 800);
         assert!(!vad.in_speech());
     }
 

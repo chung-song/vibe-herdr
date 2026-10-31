@@ -5,52 +5,20 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ChunkDecision {
-    Current,
-    CurrentAfterFocusChange,
-    Stale { focus_changed: bool },
-}
-
-struct FocusEpochGate {
-    active_epoch: u64,
-    transition_pending: bool,
-}
-
-impl FocusEpochGate {
-    fn new(initial_epoch: u64) -> Self {
-        Self {
-            active_epoch: initial_epoch,
-            transition_pending: false,
-        }
-    }
-
-    fn classify(&mut self, captured_epoch: u64, current_epoch: u64) -> ChunkDecision {
-        let focus_changed = self.active_epoch != current_epoch;
-        if focus_changed {
-            self.active_epoch = current_epoch;
-            self.transition_pending = true;
-        }
-        if captured_epoch != current_epoch {
-            ChunkDecision::Stale { focus_changed }
-        } else if std::mem::take(&mut self.transition_pending) {
-            ChunkDecision::CurrentAfterFocusChange
-        } else {
-            ChunkDecision::Current
-        }
-    }
-}
-
-struct AudioChunk {
+#[derive(Clone)]
+pub(crate) struct AudioChunk {
     samples: Vec<f32>,
     focus_epoch: u64,
+    pane_id: Option<String>,
 }
 
 impl AudioChunk {
-    fn captured(samples: Vec<f32>, focus_epoch: u64) -> Self {
+    pub(crate) fn captured(samples: Vec<f32>, tracker: &crate::deliver::FocusTracker) -> Self {
+        let (focus_epoch, pane_id) = tracker.snapshot();
         Self {
             samples,
             focus_epoch,
+            pane_id,
         }
     }
 }
@@ -61,11 +29,12 @@ pub struct Dictation {
 }
 
 #[derive(Default)]
-struct Telemetry {
+pub(crate) struct Telemetry {
     capture_ready: AtomicBool,
     samples_received: AtomicBool,
     model_ready: AtomicBool,
     speech_detected: AtomicBool,
+    settling: AtomicBool,
     processing: AtomicBool,
     checking: AtomicBool,
     waiting: AtomicBool,
@@ -73,13 +42,15 @@ struct Telemetry {
 }
 
 impl Telemetry {
-    fn phase(&self) -> &'static str {
+    pub(crate) fn phase(&self) -> &'static str {
         if self.error.load(Ordering::SeqCst) {
             "error"
         } else if self.processing.load(Ordering::SeqCst) {
             "transcribing"
         } else if self.speech_detected.load(Ordering::SeqCst) {
             "speech"
+        } else if self.settling.load(Ordering::SeqCst) {
+            "settling"
         } else if self.checking.load(Ordering::SeqCst) {
             "checking"
         } else if self.waiting.load(Ordering::SeqCst) {
@@ -194,7 +165,7 @@ fn capture_loop(
     // Tell the worker the sample rate via a header chunk.
     let _ = tx.send(AudioChunk::captured(
         vec![sample_rate as f32],
-        focus_tracker.epoch(),
+        focus_tracker,
     ));
 
     let error_telemetry = telemetry.clone();
@@ -205,7 +176,6 @@ fn capture_loop(
         .build_input_stream(
             config.into(),
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                let captured_epoch = input_focus.epoch();
                 input_telemetry
                     .samples_received
                     .store(true, Ordering::SeqCst);
@@ -216,7 +186,7 @@ fn capture_loop(
                         (frame.iter().sum::<f32>() / channels as f32 * gain).clamp(-1.0, 1.0)
                     })
                     .collect();
-                let _ = tx.send(AudioChunk::captured(mono, captured_epoch));
+                let _ = tx.send(AudioChunk::captured(mono, &input_focus));
             },
             move |e| {
                 error_telemetry.error.store(true, Ordering::SeqCst);
@@ -274,15 +244,15 @@ fn hand_off(draft: &mut String, target: &Option<Result<crate::deliver::FocusedPa
     match target {
         Some(Ok(pane)) => match crate::deliver::deliver_to_original(pane, &text) {
             Ok(()) => eprintln!(
-                "[{}] focus moved; delivered {} chars to original {}",
+                "[{}] focus moved; delivered to original {}; {} chars",
                 crate::stamp(),
-                text.chars().count(),
-                pane.pane_id
+                pane.pane_id,
+                text.chars().count()
             ),
             Err(e) => eprintln!("[{}] focus moved; delivery failed: {e}", crate::stamp()),
         },
         _ => eprintln!(
-            "[{}] focus moved; no agent pane, discarded {} chars",
+            "[{}] focus moved; no agent pane, discarded; {} chars",
             crate::stamp(),
             text.chars().count()
         ),
@@ -350,7 +320,7 @@ fn append_segment(draft: &mut String, segment: &str) -> bool {
     true
 }
 
-fn worker_loop(
+pub(crate) fn worker_loop(
     stop: &AtomicBool,
     rx: mpsc::Receiver<AudioChunk>,
     telemetry: &Telemetry,
@@ -378,7 +348,7 @@ fn worker_loop(
 
     let mut resampler = vad::Resampler::new(sample_rate);
     let mut vad = vad::Vad::new();
-    let mut epoch_gate = FocusEpochGate::new(focus_tracker.epoch());
+    let mut capture_epoch = None;
     telemetry.model_ready.store(true, Ordering::SeqCst);
     // The utterance in progress is decoded as it arrives, so the wait after
     // end-of-speech is the VAD hangover rather than hangover + whole-utterance
@@ -404,7 +374,7 @@ fn worker_loop(
     let (judge_tx, judge_rx) = mpsc::channel::<(u64, Result<bool, String>)>();
     let mut deferred_chunk = None;
     while !stop.load(Ordering::SeqCst) {
-        // Keep consuming audio while the remote completion service judges a previous
+        // Keep consuming audio while the local language model judges a previous
         // segment. Process queued audio before any verdict, so resumed speech
         // invalidates a stale "complete" decision.
         let first = match deferred_chunk.take() {
@@ -415,26 +385,19 @@ fn worker_loop(
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             },
         };
-        let mut chunks: Vec<AudioChunk> = first.into_iter().collect();
+        let mut chunks: std::collections::VecDeque<AudioChunk> = first.into_iter().collect();
         chunks.extend(rx.try_iter());
-        for chunk in chunks {
-            let decision = epoch_gate.classify(chunk.focus_epoch, focus_tracker.epoch());
-            let focus_changed = matches!(
-                decision,
-                ChunkDecision::CurrentAfterFocusChange
-                    | ChunkDecision::Stale {
-                        focus_changed: true
-                    }
-            );
-            if focus_changed {
-                // Invalidate every partial artifact before any post-switch audio
-                // reaches VAD, STT, the semantic judge, or the delivery path.
+        while let Some(chunk) = chunks.pop_front() {
+            // Replay captured epochs in FIFO order. Never throw away an active
+            // utterance just because the live focus watcher has moved ahead.
+            if !vad.in_speech() && capture_epoch != Some(chunk.focus_epoch) {
+                capture_epoch = Some(chunk.focus_epoch);
                 vad.reset();
                 resampler = vad::Resampler::new(sample_rate);
                 stream = None;
                 fed = 0;
                 fallback = false;
-                // Speech still being spoken is dropped; transcribed text goes home.
+                // No utterance is active here; hand off the buffered draft.
                 hand_off(&mut draft, &target);
                 target = None;
                 target_epoch = None;
@@ -444,18 +407,32 @@ fn worker_loop(
                 telemetry.checking.store(false, Ordering::SeqCst);
                 telemetry.waiting.store(false, Ordering::SeqCst);
             }
-            if matches!(decision, ChunkDecision::Stale { .. }) {
-                continue;
-            }
-            let chunk_16k = resampler.push(&chunk.samples);
+
             let was_in_speech = vad.in_speech();
-            let done = vad.push(&chunk_16k);
+            let done = if was_in_speech && !vad.voiced() && target_epoch != Some(chunk.focus_epoch)
+            {
+                // Silence followed by a different capture pane is an explicit
+                // handoff. Finish the old audio before feeding ANY new-pane
+                // samples; retry this chunk afterward, without losing it.
+                chunks.push_front(chunk.clone());
+                let utterance = vad.finish();
+                vad.reset();
+                utterance
+            } else {
+                vad.push(&resampler.push(&chunk.samples))
+            };
             if !was_in_speech && vad.in_speech() {
                 revision = revision.wrapping_add(1);
-                let current = crate::deliver::focused_pane();
+                let current = chunk
+                    .pane_id
+                    .as_ref()
+                    .map(|id| crate::deliver::FocusedPane {
+                        pane_id: id.clone(),
+                    })
+                    .ok_or_else(|| "no agent pane at capture time".to_string());
                 let same = match (&target, &current) {
                     (Some(Ok(old)), Ok(now)) => {
-                        old.pane_id == now.pane_id && target_epoch == Some(focus_tracker.epoch())
+                        old.pane_id == now.pane_id && target_epoch == Some(chunk.focus_epoch)
                     }
                     (None, _) => true,
                     _ => false,
@@ -475,7 +452,10 @@ fn worker_loop(
             }
             telemetry
                 .speech_detected
-                .store(vad.in_speech(), Ordering::SeqCst);
+                .store(vad.voiced(), Ordering::SeqCst);
+            telemetry
+                .settling
+                .store(vad.in_speech() && !vad.voiced(), Ordering::SeqCst);
 
             if let Some(utterance) = done {
                 telemetry.processing.store(true, Ordering::SeqCst);
@@ -510,7 +490,7 @@ fn worker_loop(
                                 continue;
                             }
                             eprintln!(
-                                "[{}] segment transcribed (rms {rms:.3}, peak {peak:.2}, {} chars)",
+                                "[{}] segment transcribed (rms {rms:.3}, peak {peak:.2}): {} chars",
                                 crate::stamp(),
                                 text.chars().count()
                             );
@@ -534,12 +514,14 @@ fn worker_loop(
                                 } else {
                                     let pane = target.take().unwrap().unwrap();
                                     target_epoch = None;
-                                    match crate::deliver::deliver_to(&pane, &body) {
+                                    // Focus may move after the check above;
+                                    // the captured destination still owns it.
+                                    match crate::deliver::deliver_to_original(&pane, &body) {
                                         Ok(()) => eprintln!(
-                                            "[{}] end word; delivered {} chars to {}",
+                                            "[{}] end word; delivered to {}; {} chars",
                                             crate::stamp(),
-                                            body.chars().count(),
-                                            pane.pane_id
+                                            pane.pane_id,
+                                            body.chars().count()
                                         ),
                                         Err(e) => {
                                             eprintln!("[{}] delivery failed: {e}", crate::stamp())
@@ -642,14 +624,14 @@ fn worker_loop(
                     let text = std::mem::take(&mut draft);
                     let pane = target.take().unwrap().unwrap();
                     target_epoch = None;
-                    if let Err(e) = crate::deliver::deliver_to(&pane, &text) {
+                    if let Err(e) = crate::deliver::deliver_to_original(&pane, &text) {
                         eprintln!("[{}] delivery failed: {e}", crate::stamp());
                     } else {
                         eprintln!(
-                            "[{}] complete; delivered {} chars to {}",
+                            "[{}] complete; delivered to {}; {} chars",
                             crate::stamp(),
-                            text.chars().count(),
-                            pane.pane_id
+                            pane.pane_id,
+                            text.chars().count()
                         );
                     }
                     revision = revision.wrapping_add(1);
@@ -657,7 +639,7 @@ fn worker_loop(
                 }
                 Ok(complete) => {
                     eprintln!(
-                        "[{}] not submitted (complete={complete}, speaking={}); waiting {} chars",
+                        "[{}] not submitted (complete={complete}, speaking={}); waiting: {} chars",
                         crate::stamp(),
                         vad.in_speech(),
                         draft.chars().count()
@@ -693,11 +675,11 @@ fn worker_loop(
             match &target {
                 Some(Ok(pane)) => match crate::deliver::deliver_to_original(pane, &text) {
                     Ok(()) => eprintln!(
-                        "[{}] unsent draft expired after {}s of silence; delivered {} chars to {}",
+                        "[{}] unsent draft expired after {}s of silence; delivered to {}; {} chars",
                         crate::stamp(),
                         draft_ttl.as_secs(),
-                        text.chars().count(),
-                        pane.pane_id
+                        pane.pane_id,
+                        text.chars().count()
                     ),
                     Err(e) => eprintln!(
                         "[{}] unsent draft expired; delivery failed: {e}",
@@ -705,7 +687,7 @@ fn worker_loop(
                     ),
                 },
                 _ => eprintln!(
-                    "[{}] unsent draft expired; no agent pane, discarded {} chars",
+                    "[{}] unsent draft expired; no agent pane, discarded; {} chars",
                     crate::stamp(),
                     text.chars().count()
                 ),
@@ -801,7 +783,7 @@ mod tests {
         let tracked = tracker.clone();
         let worker =
             std::thread::spawn(move || super::worker_loop(&stopped, rx, &observed, &tracked));
-        tx.send(super::AudioChunk::captured(vec![16_000.0], tracker.epoch()))
+        tx.send(super::AudioChunk::captured(vec![16_000.0], &tracker))
             .unwrap();
         let audio: Vec<f32> = hound::WavReader::open(&wav)
             .unwrap()
@@ -809,11 +791,11 @@ mod tests {
             .map(|s| s.unwrap() as f32 / 32768.0)
             .collect();
         for chunk in audio.chunks(512) {
-            tx.send(super::AudioChunk::captured(chunk.to_vec(), tracker.epoch()))
+            tx.send(super::AudioChunk::captured(chunk.to_vec(), &tracker))
                 .unwrap();
         }
         for _ in 0..100 {
-            tx.send(super::AudioChunk::captured(vec![0.0; 512], tracker.epoch()))
+            tx.send(super::AudioChunk::captured(vec![0.0; 512], &tracker))
                 .unwrap();
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
@@ -827,11 +809,11 @@ mod tests {
         // <250ms speech burst invalidates the first verdict, but produces no
         // second transcript. A fresh verdict must run when quiet returns.
         for _ in 0..4 {
-            tx.send(super::AudioChunk::captured(vec![0.5; 512], tracker.epoch()))
+            tx.send(super::AudioChunk::captured(vec![0.5; 512], &tracker))
                 .unwrap();
         }
         for _ in 0..100 {
-            tx.send(super::AudioChunk::captured(vec![0.0; 512], tracker.epoch()))
+            tx.send(super::AudioChunk::captured(vec![0.0; 512], &tracker))
                 .unwrap();
         }
         while !sent.exists() && std::time::Instant::now() < deadline {
@@ -857,7 +839,7 @@ mod tests {
     #[test]
     #[ignore = "requires macOS say and a local Whisper model; run explicitly with --ignored"]
     #[cfg(target_os = "macos")]
-    fn synthesized_speech_crossing_panes_never_reaches_an_agent() {
+    fn synthesized_speech_crossing_panes_reaches_only_the_original_agent() {
         use std::os::unix::fs::PermissionsExt;
         use std::sync::{Arc, atomic::AtomicBool, mpsc};
         let dir = std::env::temp_dir().join(format!("handsfree-safety-{}", std::process::id()));
@@ -879,7 +861,7 @@ mod tests {
         let focus = dir.join("focus");
         let sent = dir.join("sent");
         std::fs::write(&script, format!(
-            "#!/bin/sh\nif [ \"$1 $2\" = 'pane list' ]; then printf '{{\"result\":{{\"panes\":[{{\"pane_id\":\"%s\",\"focused\":true,\"agent\":\"hermes\"}}]}}}}' \"$(/bin/cat '{}')\"; elif [ \"$1 $2\" = 'agent prompt' ]; then printf '%s' \"$4\" > '{}'; else exit 2; fi\n",
+            "#!/bin/sh\nif [ \"$1 $2\" = 'pane list' ]; then printf '{{\"result\":{{\"panes\":[{{\"pane_id\":\"%s\",\"focused\":true,\"agent\":\"hermes\"}}]}}}}' \"$(/bin/cat '{}')\"; elif [ \"$1 $2\" = 'agent prompt' ]; then printf '%s|%s\\n' \"$3\" \"$4\" >> '{}'; else exit 2; fi\n",
             focus.display(), sent.display()
         )).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -908,7 +890,7 @@ mod tests {
         let tracked = tracker.clone();
         let worker =
             std::thread::spawn(move || super::worker_loop(&stopped, rx, &observed, &tracked));
-        tx.send(super::AudioChunk::captured(vec![16_000.0], tracker.epoch()))
+        tx.send(super::AudioChunk::captured(vec![16_000.0], &tracker))
             .unwrap();
         let audio: Vec<f32> = hound::WavReader::open(&wav)
             .unwrap()
@@ -916,7 +898,7 @@ mod tests {
             .map(|s| s.unwrap() as f32 / 32768.0)
             .collect();
         for chunk in audio.chunks(512) {
-            tx.send(super::AudioChunk::captured(chunk.to_vec(), tracker.epoch()))
+            tx.send(super::AudioChunk::captured(chunk.to_vec(), &tracker))
                 .unwrap();
         }
         let mut detected = false;
@@ -946,14 +928,22 @@ mod tests {
             "production focus watcher did not observe pane-B"
         );
         for _ in 0..190 {
-            tx.send(super::AudioChunk::captured(vec![0.0; 512], tracker.epoch()))
+            tx.send(super::AudioChunk::captured(vec![0.0; 512], &tracker))
                 .unwrap();
         }
         drop(tx);
         worker.join().unwrap();
         stop.store(true, Ordering::SeqCst);
         std::thread::sleep(std::time::Duration::from_millis(100));
-        assert!(!sent.exists(), "speech from pane-A reached pane-B");
+        let delivered = std::fs::read_to_string(&sent).unwrap_or_default();
+        assert!(
+            delivered.starts_with("pane-A|"),
+            "speech was lost: {delivered:?}"
+        );
+        assert!(
+            !delivered.contains("pane-B|"),
+            "speech from pane-A reached pane-B"
+        );
         unsafe {
             std::env::remove_var("HERDR_BIN_PATH");
             std::env::remove_var("HERDR_PLUGIN_CONFIG_DIR");
@@ -964,29 +954,22 @@ mod tests {
     }
 
     #[test]
-    fn queued_audio_from_an_old_focus_epoch_is_discarded() {
+    fn queued_audio_retains_a_consistent_capture_pane_and_epoch() {
         let tracker = crate::deliver::FocusTracker::new(Some("pane-A".into()));
         let captured_epoch = tracker.epoch();
         let (tx, rx) = std::sync::mpsc::channel();
-        tx.send(super::AudioChunk::captured(vec![0.25], captured_epoch))
+        tx.send(super::AudioChunk::captured(vec![0.25], &tracker))
             .unwrap();
         tracker.observe(Some("pane-B".into()));
 
         let queued = rx.recv().unwrap();
         assert_eq!(queued.samples, vec![0.25]);
-        let mut gate = super::FocusEpochGate::new(captured_epoch);
-        assert_eq!(
-            gate.classify(queued.focus_epoch, tracker.epoch()),
-            super::ChunkDecision::Stale {
-                focus_changed: true
-            }
-        );
+        assert_eq!(queued.focus_epoch, captured_epoch);
+        assert_eq!(queued.pane_id.as_deref(), Some("pane-A"));
 
-        let new_focus_audio = super::AudioChunk::captured(vec![0.5], tracker.epoch());
-        assert_eq!(
-            gate.classify(new_focus_audio.focus_epoch, tracker.epoch()),
-            super::ChunkDecision::CurrentAfterFocusChange
-        );
+        let new_focus_audio = super::AudioChunk::captured(vec![0.5], &tracker);
+        assert_ne!(new_focus_audio.focus_epoch, captured_epoch);
+        assert_eq!(new_focus_audio.pane_id.as_deref(), Some("pane-B"));
     }
 
     #[test]

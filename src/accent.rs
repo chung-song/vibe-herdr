@@ -11,8 +11,8 @@ const MARKER: &str = "# handsfree-phase-accent";
 pub(crate) fn color_for(phase: &str) -> Option<&'static str> {
     match phase {
         "speech" => Some("#f7768e"),
-        "transcribing" | "checking" => Some("#ff9e64"),
-        "waiting" => Some("#e0af68"),
+        "preparing" | "listening" | "settling" | "transcribing" | "checking" | "waiting"
+        | "error" => Some("#ff9e64"),
         _ => None,
     }
 }
@@ -151,6 +151,23 @@ fn write_accent_with_hook(
 mod tests {
     use super::{MARKER, with_accent, write_accent, write_accent_with_hook};
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn red_is_only_for_speech_and_all_other_active_phases_are_orange() {
+        assert_eq!(super::color_for("speech"), Some("#f7768e"));
+        for phase in [
+            "preparing",
+            "listening",
+            "settling",
+            "transcribing",
+            "checking",
+            "waiting",
+            "error",
+        ] {
+            assert_eq!(super::color_for(phase), Some("#ff9e64"), "{phase}");
+        }
+        assert_eq!(super::color_for("off"), None);
+    }
 
     #[test]
     fn only_the_marked_line_changes_and_removal_restores_the_original() {

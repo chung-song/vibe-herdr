@@ -38,6 +38,12 @@ impl FocusTracker {
     pub(crate) fn epoch(&self) -> u64 {
         self.revision.load(Ordering::SeqCst)
     }
+
+    /// Take a consistent observed pane/epoch for audio queued behind STT.
+    pub(crate) fn snapshot(&self) -> (u64, Option<String>) {
+        let pane = self.last.lock().unwrap();
+        (self.epoch(), pane.clone())
+    }
 }
 
 pub(crate) fn watch_focus(stop: Arc<AtomicBool>) -> Arc<FocusTracker> {
@@ -132,9 +138,54 @@ fn send_prompt(pane: &FocusedPane, text: &str) -> Result<(), String> {
         .output()
         .map_err(|e| format!("herdr {}: {e}", args[..2].join(" ")))?;
     if !out.status.success() {
+        let blocked = [&out.stdout, &out.stderr]
+            .iter()
+            .any(|b| String::from_utf8_lossy(b).contains("agent_blocked"));
+        if blocked && awaits_clarify_answer(&pane.pane_id) {
+            return answer_clarify(pane, text);
+        }
         return Err(format!(
-            "herdr {} failed (exit code {})",
+            "herdr {} failed (exit code {}){}",
             args[..2].join(" "),
+            out.status
+                .code()
+                .map_or_else(|| "signal".to_string(), |code| code.to_string()),
+            if blocked {
+                "; agent is blocked on a prompt that is not a clarify question"
+            } else {
+                ""
+            }
+        ));
+    }
+    Ok(())
+}
+
+/// `agent prompt` refuses a blocked agent, but Hermes' clarify question is a
+/// free-text box and safe to type into. Other blocked prompts (permission or
+/// choice menus) are never typed into: speech like "1번" could approve them.
+fn awaits_clarify_answer(pane_id: &str) -> bool {
+    let Ok(out) = Command::new(herdr_bin())
+        .args([
+            "pane", "read", pane_id, "--source", "visible", "--lines", "12",
+        ])
+        .output()
+    else {
+        return false;
+    };
+    out.status.success()
+        && String::from_utf8_lossy(&out.stdout)
+            .to_lowercase()
+            .contains("type your answer here and press enter")
+}
+
+fn answer_clarify(pane: &FocusedPane, text: &str) -> Result<(), String> {
+    let out = Command::new(herdr_bin())
+        .args(["pane", "run", &pane.pane_id, text])
+        .output()
+        .map_err(|e| format!("herdr pane run: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "herdr pane run failed (exit code {})",
             out.status
                 .code()
                 .map_or_else(|| "signal".to_string(), |code| code.to_string())
@@ -236,6 +287,46 @@ mod tests {
         let error = super::deliver_to(&pane, "private transcript").unwrap_err();
         assert!(error.contains("23"));
         assert!(!error.contains("private transcript"));
+        if let Some(previous) = previous {
+            unsafe { std::env::set_var("HERDR_BIN_PATH", previous) };
+        } else {
+            unsafe { std::env::remove_var("HERDR_BIN_PATH") };
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn blocked_agent_is_typed_into_only_when_it_asks_a_clarify_question() {
+        let _env_guard = ENV_LOCK.lock().unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("handsfree-clarify-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("mock-herdr");
+        let screen = dir.join("screen");
+        let sent = dir.join("sent");
+        std::fs::write(&script, format!(
+            "#!/bin/sh\nif [ \"$1 $2\" = 'agent prompt' ]; then echo 'error: agent_blocked' >&2; exit 1; elif [ \"$1 $2\" = 'pane read' ]; then /bin/cat '{}'; elif [ \"$1 $2\" = 'pane run' ]; then printf '%s %s' \"$3\" \"$4\" > '{}'; else exit 2; fi\n",
+            screen.display(), sent.display()
+        )).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let previous = std::env::var_os("HERDR_BIN_PATH");
+        unsafe { std::env::set_var("HERDR_BIN_PATH", &script) };
+        let pane = super::FocusedPane {
+            pane_id: "pane-A".into(),
+        };
+
+        std::fs::write(&screen, "Allow this command?\n❯ 1. Yes\n  2. No\n").unwrap();
+        assert!(super::deliver_to_original(&pane, "1번").is_err());
+        assert!(!sent.exists(), "speech was typed into a non-clarify prompt");
+
+        std::fs::write(
+            &screen,
+            "? clarify (16.6s)\n❯ type your answer here and press Enter\n",
+        )
+        .unwrap();
+        assert!(super::deliver_to_original(&pane, "2025-06-01").is_ok());
+        assert_eq!(std::fs::read_to_string(&sent).unwrap(), "pane-A 2025-06-01");
+
         if let Some(previous) = previous {
             unsafe { std::env::set_var("HERDR_BIN_PATH", previous) };
         } else {
