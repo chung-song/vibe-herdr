@@ -34,7 +34,8 @@ def status_label(sock_path=SOCKET):
                 data += chunk
         state = json.loads(data)["state"]
         phase = state.get("dictation_phase", "preparing" if state.get("dictation") else "off")
-        return LABELS.get(phase, "voice unknown")
+        mode = "space" if state.get("dictation_mode") == "space" else "auto"
+        return f"{mode} {LABELS.get(phase, 'voice unknown')}"
     except (OSError, ValueError, KeyError, TypeError):
         return "voice standby"
 

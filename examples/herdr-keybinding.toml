@@ -5,3 +5,9 @@ key = "prefix+d"
 type = "plugin_action"
 command = "ranolp.handsfree.toggle-dictation"
 description = "Toggle voice dictation"
+
+[[keys.command]]
+key = "prefix+shift+v"
+type = "plugin_action"
+command = "ranolp.handsfree.cycle-dictation-mode"
+description = "Switch dictation mode"

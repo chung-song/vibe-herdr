@@ -18,4 +18,4 @@ command = ["target/release/herdr-handsfree", "toggle", "dictation"]
 [[actions]]
 id = "cycle-dictation-mode"
 title = "Switch voice dictation mode"
-command = ["target/release/herdr-handsfree", "cycle-dictation-mode"]
+command = ["/usr/bin/python3", "scripts/switch_dictation_mode.py"]
