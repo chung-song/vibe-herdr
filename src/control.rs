@@ -15,6 +15,8 @@ pub enum Request {
     Toggle {
         target: Target,
     },
+    CycleDictationMode,
+    CheckSpacePermission,
     Stop,
     /// Start the gaze pipeline (without cursor moves) for calibration.
     CalStart,
@@ -37,9 +39,34 @@ pub enum Target {
     Gaze,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DictationMode {
+    #[default]
+    Auto,
+    Space,
+}
+
+impl DictationMode {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::Space,
+            Self::Space => Self::Auto,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Space => "space",
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct State {
     pub dictation: bool,
+    #[serde(default)]
+    pub dictation_mode: DictationMode,
     #[serde(default)]
     pub dictation_phase: String,
     pub gaze: bool,

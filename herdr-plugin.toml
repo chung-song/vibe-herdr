@@ -14,3 +14,8 @@ command = ["target/release/herdr-handsfree", "ensure-daemon"]
 id = "toggle-dictation"
 title = "Toggle voice dictation"
 command = ["target/release/herdr-handsfree", "toggle", "dictation"]
+
+[[actions]]
+id = "cycle-dictation-mode"
+title = "Switch voice dictation mode"
+command = ["target/release/herdr-handsfree", "cycle-dictation-mode"]

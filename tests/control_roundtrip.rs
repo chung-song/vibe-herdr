@@ -43,3 +43,44 @@ fn status_roundtrip_without_microphone() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn mode_switch_is_saved_without_opening_microphone() {
+    let dir = std::env::temp_dir().join(format!("handsfree-mode-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("dictation-mode"), "space").unwrap();
+    let (ok, out) = run(&dir, &["ensure-daemon"]);
+    assert!(ok, "{out}");
+    let (ok, out) = run(&dir, &["status"]);
+    assert!(ok && out.contains("mode: space"), "{out}");
+    let (ok, out) = run(&dir, &["cycle-dictation-mode"]);
+    assert!(ok && out.contains("mode=auto"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("dictation-mode")).unwrap(),
+        "auto"
+    );
+    let (ok, out) = run(&dir, &["stop"]);
+    assert!(ok, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn explicit_correction_is_saved_once_with_private_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir =
+        std::env::temp_dir().join(format!("handsfree-correction-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for _ in 0..2 {
+        let (ok, out) = run(&dir, &["add-correction", "노션TV", "노션 DB"]);
+        assert!(ok, "{out}");
+    }
+    let path = dir.join(".config/herdr-handsfree/corrections.tsv");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "노션TV\t노션 DB\n");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+        0
+    );
+    let (ok, _) = run(&dir, &["add-correction", "노션TV", "다른 내용"]);
+    assert!(!ok);
+    let _ = std::fs::remove_dir_all(dir);
+}

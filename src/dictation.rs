@@ -119,7 +119,7 @@ fn mic_matches(description: &str, wanted: &str) -> bool {
 
 /// Config `microphone` (or HANDSFREE_MIC) selects the input device; empty or
 /// unmatched falls back to the system default.
-fn pick_device(host: &cpal::Host) -> Option<cpal::Device> {
+pub(crate) fn pick_device(host: &cpal::Host) -> Option<cpal::Device> {
     let wanted =
         std::env::var("HANDSFREE_MIC").unwrap_or_else(|_| crate::config::get().microphone.clone());
     if wanted.trim().is_empty() {
@@ -478,6 +478,7 @@ pub(crate) fn worker_loop(
                 }
                 fed = 0;
                 fallback = false;
+                let text = text.map(|text| crate::config::correct_transcript(&text));
                 match text {
                     Ok(text) if !text.trim().is_empty() => {
                         if target_epoch == Some(focus_tracker.epoch())

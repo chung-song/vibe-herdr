@@ -6,6 +6,7 @@ mod deliver;
 mod dictation;
 mod gaze;
 mod models;
+mod push_to_talk;
 mod silero;
 mod stt;
 mod turn_gate;
@@ -41,6 +42,12 @@ enum Command {
     EnsureDaemon,
     /// Toggle dictation or gaze on/off
     Toggle { target: Target },
+    /// Switch between automatic dictation and holding space to speak
+    CycleDictationMode,
+    /// Check macOS keyboard access without changing the current mode
+    CheckSpacePermission,
+    /// Add an explicit spoken-text correction for future utterances
+    AddCorrection { heard: String, intended: String },
     /// Show daemon state
     Status {
         /// Redraw continuously (for the status pane)
@@ -79,6 +86,38 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             roundtrip(&Request::Toggle { target })
+        }
+        Command::CycleDictationMode => {
+            if ensure_daemon() == ExitCode::FAILURE {
+                return ExitCode::FAILURE;
+            }
+            roundtrip(&Request::CycleDictationMode)
+        }
+        Command::CheckSpacePermission => match control::request(&Request::CheckSpacePermission) {
+            Ok(resp) if resp.ok => {
+                println!("space-key access: available");
+                ExitCode::SUCCESS
+            }
+            Ok(resp) => {
+                eprintln!("space-key access: {}", resp.error.unwrap_or_default());
+                ExitCode::FAILURE
+            }
+            Err(e) => {
+                eprintln!("cannot check daemon keyboard access: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Command::AddCorrection { heard, intended } => {
+            match config::add_correction(&heard, &intended) {
+                Ok(()) => {
+                    println!("correction saved");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("cannot save correction: {e}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Command::Status { follow } => status(follow),
         Command::Calibrate => calibrate(),
@@ -241,8 +280,9 @@ fn roundtrip(req: &Request) -> ExitCode {
     match control::request(req) {
         Ok(resp) if resp.ok => {
             println!(
-                "dictation={} gaze={}",
+                "dictation={} mode={} gaze={}",
                 on_off(resp.state.dictation),
+                resp.state.dictation_mode.as_str(),
                 on_off(resp.state.gaze)
             );
             ExitCode::SUCCESS
@@ -321,8 +361,9 @@ fn status(follow: bool) -> ExitCode {
     loop {
         let line = match control::request(&Request::Status) {
             Ok(resp) => format!(
-                "handsfree  dictation: {}   gaze: {}{}",
+                "handsfree  dictation: {}   mode: {}   gaze: {}{}",
                 on_off(resp.state.dictation),
+                resp.state.dictation_mode.as_str(),
                 on_off(resp.state.gaze),
                 if resp.state.gaze_calibrated {
                     ""

@@ -135,6 +135,11 @@ fn worker_keeps_old_pane_audio_queued_during_transcription() {
 }
 
 #[test]
+fn worker_applies_explicit_correction_before_delivery() {
+    replay("worker_applies_explicit_correction_before_delivery");
+}
+
+#[test]
 fn worker_focus_at_submission_keeps_the_original_destination() {
     replay("worker_focus_at_submission_keeps_the_original_destination");
 }
@@ -162,6 +167,7 @@ fn replay(case: &str) {
     let sent = dir.join("sent");
     std::fs::write(&focus, "pane-A").unwrap();
     let old_audio = case == "worker_keeps_old_pane_audio_queued_during_transcription";
+    let corrected = case == "worker_applies_explicit_correction_before_delivery";
     let waiting = case == "worker_waiting_is_orange_and_draft_survives_switch";
     let decoding = case == "worker_focus_during_transcription_preserves_queued_panes" || old_audio;
     let submit_race = case == "worker_focus_at_submission_keeps_the_original_destination";
@@ -174,6 +180,9 @@ fn replay(case: &str) {
         },
     )
     .unwrap();
+    if corrected {
+        std::fs::write(dir.join("corrections.tsv"), "첫 문장\t정정 문장\n").unwrap();
+    }
     std::fs::write(&script, format!(
         "#!/bin/sh\nif [ \"$1 $2\" = 'pane list' ]; then printf '{{\"result\":{{\"panes\":[{{\"pane_id\":\"%s\",\"focused\":true,\"agent\":\"hermes\"}}]}}}}' \"$(/bin/cat '{0}')\"; if [ \"$HANDSFREE_REPLAY_SUBMIT_RACE\" = 1 ]; then printf pane-B > '{0}'; fi; elif [ \"$1 $2\" = 'agent prompt' ]; then printf '%s|%s\\n' \"$3\" \"$4\" >> '{1}'; else exit 2; fi\n", focus.display(), sent.display()
     )).unwrap();
@@ -301,6 +310,15 @@ fn replay(case: &str) {
             "{deliveries:?}"
         );
         assert!(deliveries.contains("pane-B|첫 문장"), "{deliveries:?}");
+        std::fs::remove_dir_all(dir).unwrap();
+        return;
+    }
+    if corrected {
+        assert!(
+            deliveries.contains("pane-A|정정 문장 뒤 문장"),
+            "{deliveries:?}"
+        );
+        assert!(!deliveries.contains("첫 문장"), "{deliveries:?}");
         std::fs::remove_dir_all(dir).unwrap();
         return;
     }

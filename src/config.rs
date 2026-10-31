@@ -27,12 +27,14 @@ pub struct Config {
     /// microphones. Samples are clipped to [-1, 1].
     pub input_gain: f32,
     /// Tint Herdr's accent color (focused pane border) by dictation phase:
-    /// red while speaking, orange while transcribing/judging, yellow while
+    /// red on voiced frames, orange while settling/transcribing/judging or
     /// waiting for more speech. Edits one marked line in Herdr's config.
     pub phase_accent: bool,
     /// Spoken word that forces submission when the remote completion judge
     /// misses a finished turn, e.g. "이상". Empty disables the override.
     pub end_word: String,
+    /// Bundle ID of the terminal where space push-to-talk is active.
+    pub push_to_talk_app: String,
     /// One-Euro filter: lower = smoother but laggier cursor
     pub smoothing_min_cutoff: f64,
     /// One-Euro filter: higher = snappier during fast gaze moves
@@ -51,6 +53,7 @@ impl Default for Config {
             input_gain: 1.0,
             phase_accent: false,
             end_word: String::new(),
+            push_to_talk_app: "com.mitchellh.ghostty".to_string(),
             smoothing_min_cutoff: 1.0,
             smoothing_beta: 0.01,
         }
@@ -78,6 +81,123 @@ pub(crate) fn config_dir() -> std::path::PathBuf {
             std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME not set"))
                 .join(".config/herdr-handsfree")
         })
+}
+
+/// Explicit, user-provided transcription corrections. Read on each result so
+/// a new correction takes effect without restarting or retaining recordings.
+pub(crate) fn correct_transcript(text: &str) -> String {
+    let path = config_dir().join("corrections.tsv");
+    match std::fs::read_to_string(&path) {
+        Ok(rules) if rules.len() <= 16_384 => apply_corrections(text, &rules),
+        Ok(_) => {
+            eprintln!("corrections.tsv exceeds 16384 bytes; corrections not applied");
+            text.to_string()
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => text.to_string(),
+        Err(e) => {
+            eprintln!("cannot read corrections.tsv: {e}");
+            text.to_string()
+        }
+    }
+}
+
+fn apply_corrections(text: &str, rules: &str) -> String {
+    let mut pairs: Vec<(&str, &str)> = rules
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter_map(|line| line.split_once('\t'))
+        .filter(|(heard, intended)| !heard.is_empty() && !intended.is_empty())
+        .collect();
+    pairs.sort_by_key(|(heard, _)| std::cmp::Reverse(heard.len()));
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some((heard, intended)) = pairs.iter().find(|(heard, _)| rest.starts_with(heard)) {
+            result.push_str(intended);
+            rest = &rest[heard.len()..];
+        } else {
+            let ch = rest.chars().next().expect("nonempty");
+            result.push(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+    }
+    result
+}
+
+/// Append one explicit correction without saving the spoken audio.
+pub(crate) fn add_correction(heard: &str, intended: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    if heard.trim().is_empty()
+        || intended.trim().is_empty()
+        || heard.contains(['\t', '\r', '\n'])
+        || intended.contains(['\t', '\r', '\n'])
+        || heard.trim_start().starts_with('#')
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "use nonempty single-line text without tabs",
+        ));
+    }
+    let dir = config_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("corrections.tsv");
+    if let Ok(meta) = std::fs::metadata(&path)
+        && meta.permissions().mode() & 0o077 != 0
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "corrections.tsv must be readable only by its owner",
+        ));
+    }
+    let prior = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    if prior.len() + heard.len() + intended.len() + 3 > 16_384 {
+        return Err(std::io::Error::other(
+            "corrections.tsv would exceed 16384 bytes",
+        ));
+    }
+    for (old, value) in prior.lines().filter_map(|line| line.split_once('\t')) {
+        if old == heard {
+            return if value == intended {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "a different correction already exists; edit corrections.tsv",
+                ))
+            };
+        }
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)?;
+    if !prior.is_empty() && !prior.ends_with('\n') {
+        file.write_all(b"\n")?;
+    }
+    writeln!(file, "{heard}\t{intended}")
+}
+
+#[cfg(test)]
+mod correction_tests {
+    #[test]
+    fn explicit_rules_choose_longest_match_without_cascading() {
+        let rules = "# heard<TAB>intended\n노션TV\t노션 DB\n노션\tNotion\n노션 DB\twrong\n";
+        assert_eq!(
+            super::apply_corrections("노션TV에 기록", rules),
+            "노션 DB에 기록"
+        );
+        assert_eq!(super::apply_corrections("다른 말", rules), "다른 말");
+        assert_eq!(
+            super::apply_corrections("노션TV 노션", rules),
+            "노션 DB Notion"
+        );
+    }
 }
 
 /// Re-read at each utterance so glossary.txt can be edited without restarting.

@@ -1,15 +1,36 @@
 //! Long-running daemon: owns mic + camera (later milestones) and answers
 //! control requests over the unix socket.
 
-use crate::control::{self, Request, Response, State, Target};
+use crate::control::{self, DictationMode, Request, Response, State, Target};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 
 pub struct Daemon {
     pub state: Mutex<State>,
-    dictation: Mutex<Option<crate::dictation::Dictation>>,
+    dictation: Mutex<Option<DictationEngine>>,
     gaze: Mutex<Option<crate::gaze::Gaze>>,
+}
+
+enum DictationEngine {
+    Auto(crate::dictation::Dictation),
+    Space(crate::push_to_talk::PushToTalk),
+}
+
+impl DictationEngine {
+    fn phase(&self) -> &'static str {
+        match self {
+            Self::Auto(d) => d.phase(),
+            Self::Space(d) => d.phase(),
+        }
+    }
+
+    fn try_stop_space(&self) -> bool {
+        match self {
+            Self::Space(d) => d.try_stop(),
+            Self::Auto(_) => true,
+        }
+    }
 }
 
 pub fn run() -> std::io::Result<()> {
@@ -35,7 +56,13 @@ pub fn run() -> std::io::Result<()> {
     );
 
     let daemon = Arc::new(Daemon {
-        state: Mutex::new(State::default()),
+        state: Mutex::new(State {
+            dictation_mode: match std::fs::read_to_string(dir.join("dictation-mode")) {
+                Ok(s) if s.trim() == "space" => DictationMode::Space,
+                _ => DictationMode::Auto,
+            },
+            ..State::default()
+        }),
         dictation: Mutex::new(None),
         gaze: Mutex::new(None),
     });
@@ -137,20 +164,86 @@ fn dispatch(daemon: &Daemon, req: Request) -> Response {
     let mut error = None;
     match req {
         Request::Ping | Request::Status => {}
+        Request::CheckSpacePermission => {
+            if !crate::push_to_talk::keyboard_access_available() {
+                crate::push_to_talk::request_keyboard_access();
+                error = Some(
+                    "macOS Accessibility permission is required for space dictation".to_string(),
+                );
+            }
+        }
         Request::Toggle { target } => {
             let mut state = daemon.state.lock().unwrap();
             match target {
-                Target::Dictation => state.dictation = !state.dictation,
+                Target::Dictation => {
+                    let busy = state.dictation
+                        && state.dictation_mode == DictationMode::Space
+                        && daemon
+                            .dictation
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .is_some_and(|d| !d.try_stop_space());
+                    if busy {
+                        error = Some(
+                            "space dictation is recording or transcribing; wait for delivery"
+                                .to_string(),
+                        );
+                    } else {
+                        state.dictation = !state.dictation;
+                    }
+                }
                 Target::Gaze => state.gaze = !state.gaze,
             }
             apply(daemon, &state);
         }
+        Request::CycleDictationMode => {
+            let mut state = daemon.state.lock().unwrap();
+            if state.dictation {
+                error = Some("turn dictation off before switching modes".to_string());
+            } else {
+                let next = state.dictation_mode.next();
+                if next == DictationMode::Space && !crate::push_to_talk::keyboard_access_available()
+                {
+                    crate::push_to_talk::request_keyboard_access();
+                    let exe = std::env::current_exe()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| "herdr-handsfree".to_string());
+                    error = Some(format!(
+                        "Enable Accessibility for {exe} in macOS System Settings, then switch modes again"
+                    ));
+                } else {
+                    let path = control::state_dir().join("dictation-mode");
+                    let tmp = path.with_extension("tmp");
+                    match std::fs::write(&tmp, next.as_str())
+                        .and_then(|()| std::fs::rename(&tmp, &path))
+                    {
+                        Ok(()) => state.dictation_mode = next,
+                        Err(e) => error = Some(format!("cannot save dictation mode: {e}")),
+                    }
+                }
+            }
+        }
         Request::Stop => {
-            STOP.store(true, std::sync::atomic::Ordering::SeqCst);
-            // The accept loop notices on the next connection; nudge it.
-            std::thread::spawn(|| {
-                let _ = UnixStream::connect(control::socket_path());
-            });
+            let state = daemon.state.lock().unwrap();
+            let busy = state.dictation_mode == DictationMode::Space
+                && daemon
+                    .dictation
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|d| !d.try_stop_space());
+            if busy {
+                error = Some(
+                    "space dictation is recording or transcribing; wait for delivery".to_string(),
+                );
+            } else {
+                STOP.store(true, std::sync::atomic::Ordering::SeqCst);
+                // The accept loop notices on the next connection; nudge it.
+                std::thread::spawn(|| {
+                    let _ = UnixStream::connect(control::socket_path());
+                });
+            }
         }
         // Lock order everywhere: state before gaze (apply() holds state while
         // locking gaze, so any gaze→state nesting would deadlock).
@@ -242,7 +335,14 @@ fn apply(daemon: &Daemon, state: &State) {
     eprintln!("state: dictation={} gaze={}", state.dictation, state.gaze);
     let mut dictation = daemon.dictation.lock().unwrap();
     match (state.dictation, dictation.is_some()) {
-        (true, false) => *dictation = Some(crate::dictation::Dictation::start()),
+        (true, false) => {
+            *dictation = Some(match state.dictation_mode {
+                DictationMode::Auto => DictationEngine::Auto(crate::dictation::Dictation::start()),
+                DictationMode::Space => {
+                    DictationEngine::Space(crate::push_to_talk::PushToTalk::start())
+                }
+            })
+        }
         (false, true) => *dictation = None,
         _ => {}
     }

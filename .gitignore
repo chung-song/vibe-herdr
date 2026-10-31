@@ -1,6 +1,7 @@
 /target/
 /config.toml
 /glossary.txt
+/corrections.tsv
 /jev.key
 *.key
 *.pem
