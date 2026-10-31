@@ -130,6 +130,11 @@ fn worker_focus_during_transcription_preserves_queued_panes() {
 }
 
 #[test]
+fn worker_keeps_old_pane_audio_queued_during_transcription() {
+    replay("worker_keeps_old_pane_audio_queued_during_transcription");
+}
+
+#[test]
 fn worker_focus_at_submission_keeps_the_original_destination() {
     replay("worker_focus_at_submission_keeps_the_original_destination");
 }
@@ -156,8 +161,9 @@ fn replay(case: &str) {
     let focus = dir.join("focus");
     let sent = dir.join("sent");
     std::fs::write(&focus, "pane-A").unwrap();
+    let old_audio = case == "worker_keeps_old_pane_audio_queued_during_transcription";
     let waiting = case == "worker_waiting_is_orange_and_draft_survives_switch";
-    let decoding = case == "worker_focus_during_transcription_preserves_queued_panes";
+    let decoding = case == "worker_focus_during_transcription_preserves_queued_panes" || old_audio;
     let submit_race = case == "worker_focus_at_submission_keeps_the_original_destination";
     std::fs::write(
         dir.join("config.toml"),
@@ -249,6 +255,12 @@ fn replay(case: &str) {
         assert_eq!(accent::color_for(telemetry.phase()), Some("#ff9e64"));
         assert!(!sent.exists(), "draft submitted prematurely");
     }
+    if old_audio {
+        // The worker is busy transcribing the first segment. These samples
+        // were captured on A before the user switched to B.
+        send(0.5, 16);
+        send(0.0, 70);
+    }
     if after_end {
         send(0.35, 12);
         send(0.0, 1);
@@ -263,11 +275,13 @@ fn replay(case: &str) {
     if queued {
         stt::HOLD_LOAD.store(false, Ordering::SeqCst);
     } else if after_end || decoding {
-        send(0.5, 16);
+        send(if old_audio { 0.25 } else { 0.5 }, 16);
         send(0.0, 70);
-        if decoding {
+        if decoding && !old_audio {
             std::fs::write(&focus, "pane-C").unwrap();
             tracker.observe(Some("pane-C".into()));
+        }
+        if decoding {
             stt::HOLD.store(false, Ordering::SeqCst);
         }
     } else if waiting {
@@ -280,6 +294,16 @@ fn replay(case: &str) {
     worker.join().unwrap();
     stop.store(true, Ordering::SeqCst);
     let deliveries = std::fs::read_to_string(&sent).unwrap_or_default();
+    if old_audio {
+        assert_eq!(deliveries.lines().count(), 2, "{deliveries:?}");
+        assert!(
+            deliveries.contains("pane-A|첫 문장 뒤 문장 이상 새 문장 이상"),
+            "{deliveries:?}"
+        );
+        assert!(deliveries.contains("pane-B|첫 문장"), "{deliveries:?}");
+        std::fs::remove_dir_all(dir).unwrap();
+        return;
+    }
     assert!(
         deliveries.contains("pane-A|첫 문장 뒤 문장"),
         "in-flight audio was lost or split: {deliveries:?}"

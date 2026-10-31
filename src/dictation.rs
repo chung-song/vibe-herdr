@@ -382,7 +382,14 @@ pub(crate) fn worker_loop(
             None => match rx.recv_timeout(std::time::Duration::from_millis(50)) {
                 Ok(c) => Some(c),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // A capture device can stop after its last old-pane
+                    // chunk. There may be no newer epoch to trigger handoff.
+                    if !stop.load(Ordering::SeqCst) {
+                        hand_off(&mut draft, &target);
+                    }
+                    break;
+                }
             },
         };
         let mut chunks: std::collections::VecDeque<AudioChunk> = first.into_iter().collect();
@@ -542,13 +549,13 @@ pub(crate) fn worker_loop(
                                 let _ = sender.send((checked, crate::turn_gate::judge(&snapshot)));
                             });
                         } else {
-                            // Focus moved while this segment was transcribing.
+                            // Capture is queued while transcription runs. A
+                            // focus change can happen after more old-pane
+                            // audio was already captured, so wait until that
+                            // queue reaches the new epoch before handing off.
                             if !append_segment(&mut draft, &text) {
                                 draft.clear();
                             }
-                            hand_off(&mut draft, &target);
-                            target = None;
-                            target_epoch = None;
                             revision = revision.wrapping_add(1);
                             telemetry.checking.store(false, Ordering::SeqCst);
                             telemetry.waiting.store(false, Ordering::SeqCst);
@@ -600,9 +607,9 @@ pub(crate) fn worker_loop(
             let focus_unchanged = target_epoch == Some(focus_tracker.epoch())
                 && current_target.is_some_and(crate::deliver::same_as_current);
             if !focus_unchanged {
-                hand_off(&mut draft, &target);
-                target = None;
-                target_epoch = None;
+                // The live focus watcher can move ahead of audio that is
+                // already queued. The capture epoch transition hands off
+                // only after that older audio has been processed.
                 revision = revision.wrapping_add(1);
                 telemetry.waiting.store(false, Ordering::SeqCst);
                 continue;
@@ -724,11 +731,8 @@ pub(crate) fn worker_loop(
                     let _ = sender.send((checked, crate::turn_gate::judge(&snapshot)));
                 });
             } else {
-                hand_off(&mut draft, &target);
-                target = None;
-                target_epoch = None;
-                revision = revision.wrapping_add(1);
-                telemetry.waiting.store(false, Ordering::SeqCst);
+                // Wait for the captured epoch transition: the live watcher
+                // may be ahead of old-pane audio already in the queue.
             }
         }
     }

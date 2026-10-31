@@ -7,7 +7,7 @@ const FRAME_MS: usize = FRAME * 1000 / SAMPLE_RATE;
 const PRE_ROLL_MS: usize = 300;
 // Segmentation only, not permission to submit: the semantic/end-word gate
 // still decides whether an accumulated draft is a complete turn.
-const HANGOVER_MS: usize = 800;
+const HANGOVER_MS: usize = 1500;
 const MIN_SPEECH_MS: usize = 250;
 const MAX_UTTERANCE_MS: usize = 30_000;
 const RMS_THRESHOLD: f32 = 0.015;
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn eos_debounce_keeps_short_pauses_but_finishes_in_800ms() {
+    fn eos_debounce_keeps_short_pauses_but_finishes_after_1500ms() {
         let mut vad = energy_vad();
         let loud = vec![0.5f32; FRAME];
         let quiet = vec![0.0f32; FRAME];
@@ -236,7 +236,9 @@ mod tests {
             assert!(elapsed_ms < 4_000, "utterance never completed");
         }
         eprintln!("measured EOS silence: {elapsed_ms} ms (sample clock)");
-        assert_eq!(elapsed_ms, 800);
+        // Decisions use 32 ms frames, so the first frame at or above 1500 ms
+        // completes at 1504 ms.
+        assert_eq!(elapsed_ms, 1504);
         assert!(!vad.in_speech());
     }
 
