@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build (Whisper backend)
-        run: cargo build --no-default-features --features whisper
-      - name: Test (offline English fixture excluded)
-        run: cargo test --no-default-features --features whisper -- --skip wav_through_vad_and_stt
+      - name: Build
+        run: cargo build --release
+      - name: Test
+        run: cargo test --release

@@ -234,8 +234,8 @@ mod tests {
     #[test]
     fn glossary_skips_comments_and_preserves_spelling() {
         assert_eq!(
-            super::glossary_prompt("# names\nExampleName\n\n ProjectTwo \n"),
-            "ExampleName, ProjectTwo"
+            super::glossary_prompt("# names\n피어나\n\n JLPTinder \n"),
+            "피어나, JLPTinder"
         );
     }
 }

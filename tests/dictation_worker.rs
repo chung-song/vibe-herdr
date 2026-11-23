@@ -39,17 +39,20 @@ mod stt {
     pub static DECODING: AtomicBool = AtomicBool::new(false);
     pub static HOLD: AtomicBool = AtomicBool::new(false);
     pub static HOLD_LOAD: AtomicBool = AtomicBool::new(false);
+    pub static LOADS: AtomicUsize = AtomicUsize::new(0);
+    pub static DROPS: AtomicUsize = AtomicUsize::new(0);
     pub struct Stt;
     pub struct Stream<'a> {
         stt: &'a Stt,
         audio: Vec<f32>,
     }
     impl Stt {
-        pub fn shared() -> std::io::Result<&'static Self> {
+        pub fn for_session() -> std::io::Result<Self> {
+            LOADS.fetch_add(1, Ordering::SeqCst);
             while HOLD_LOAD.load(Ordering::SeqCst) {
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
-            Ok(&Stt)
+            Ok(Stt)
         }
         pub fn stream(&self) -> Stream<'_> {
             Stream {
@@ -68,6 +71,11 @@ mod stt {
                 .map(|(_, text)| text)
                 .collect();
             Ok(format!("{} 이상", parts.join(" ")))
+        }
+    }
+    impl Drop for Stt {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
         }
     }
     impl Stream<'_> {
@@ -144,6 +152,16 @@ fn worker_focus_at_submission_keeps_the_original_destination() {
     replay("worker_focus_at_submission_keeps_the_original_destination");
 }
 
+#[test]
+fn worker_releases_model_when_stopped_and_reloads_next_session() {
+    replay("worker_releases_model_when_stopped_and_reloads_next_session");
+}
+
+#[test]
+fn worker_releases_model_if_stopped_during_loading() {
+    replay("worker_releases_model_if_stopped_during_loading");
+}
+
 fn replay(case: &str) {
     if std::env::var("HANDSFREE_REPLAY_CASE").ok().as_deref() != Some(case) {
         let out = std::process::Command::new(std::env::current_exe().unwrap())
@@ -203,13 +221,59 @@ fn replay(case: &str) {
     let queued = case == "worker_queued_onset_keeps_capture_pane";
     let phases = case == "worker_phase_tracks_voice_not_end_of_speech_debounce";
     let after_end = case == "worker_switch_after_end_keeps_next_pane_separate";
-    stt::HOLD_LOAD.store(queued, Ordering::SeqCst);
+    let cancel_load = case == "worker_releases_model_if_stopped_during_loading";
+    stt::HOLD_LOAD.store(queued || cancel_load, Ordering::SeqCst);
     let worker = {
         let (stop, tracker, telemetry) = (stop.clone(), tracker.clone(), telemetry.clone());
         std::thread::spawn(move || dictation::worker_loop(&stop, rx, &telemetry, &tracker))
     };
     tx.send(dictation::AudioChunk::captured(vec![16_000.0], &tracker))
         .unwrap();
+    if case == "worker_releases_model_when_stopped_and_reloads_next_session" || cancel_load {
+        wait_for("model load did not start", || {
+            stt::LOADS.load(Ordering::SeqCst) == 1
+        });
+        if !cancel_load {
+            tx.send(dictation::AudioChunk::captured(
+                vec![0.25; vad::FRAME],
+                &tracker,
+            ))
+            .unwrap();
+            wait_for("worker did not use the loaded model", || {
+                stt::FED.load(Ordering::SeqCst) > 0
+            });
+        }
+        stop.store(true, Ordering::SeqCst);
+        stt::HOLD_LOAD.store(false, Ordering::SeqCst);
+        worker.join().unwrap();
+        assert_eq!(stt::DROPS.load(Ordering::SeqCst), 1);
+        assert_eq!(stt::LOADS.load(Ordering::SeqCst), 1);
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let next_stop = stop.clone();
+        let (next_tx, next_rx) = mpsc::channel();
+        let next_tracker = tracker.clone();
+        let next_worker = std::thread::spawn(move || {
+            dictation::worker_loop(
+                &next_stop,
+                next_rx,
+                &dictation::Telemetry::default(),
+                &next_tracker,
+            )
+        });
+        next_tx
+            .send(dictation::AudioChunk::captured(vec![16_000.0], &tracker))
+            .unwrap();
+        wait_for("next session did not reload", || {
+            stt::LOADS.load(Ordering::SeqCst) == 2
+        });
+        stop.store(true, Ordering::SeqCst);
+        next_worker.join().unwrap();
+        assert_eq!(stt::DROPS.load(Ordering::SeqCst), 2);
+        assert!(!sent.exists(), "stopped session must not deliver text");
+        std::fs::remove_dir_all(dir).unwrap();
+        return;
+    }
     let send = |level, frames| {
         for _ in 0..frames {
             tx.send(dictation::AudioChunk::captured(

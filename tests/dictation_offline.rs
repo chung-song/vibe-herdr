@@ -27,19 +27,14 @@ fn wav_through_vad_and_stt() {
         .success();
     assert!(ok, "say failed");
 
-    let cfg = std::env::temp_dir().join(format!("handsfree-en-cfg-{}", std::process::id()));
-    std::fs::create_dir_all(&cfg).expect("create isolated config dir");
-
     let out = Command::new(env!("CARGO_BIN_EXE_herdr-handsfree"))
         .arg("transcribe-file")
         .arg(&wav)
-        .env("HERDR_PLUGIN_CONFIG_DIR", &cfg)
         .env("HANDSFREE_ASR_MODEL", "0.6B")
         .env("HANDSFREE_MODEL", "tiny")
         .output()
         .expect("spawn transcribe-file");
     let _ = std::fs::remove_file(&wav);
-    let _ = std::fs::remove_dir_all(&cfg);
     let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
     assert!(
         out.status.success() && text.contains("hello world"),

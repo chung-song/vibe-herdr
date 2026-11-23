@@ -13,25 +13,41 @@ pub use qwen::{Stream, Stt};
 pub use whisper::{Stream, Stt};
 
 impl Stt {
-    /// Load once and keep the engine for the process lifetime. `Dictation` is
-    /// dropped on every toggle-off, so without this each toggle-on pays the
-    /// full load again (~1.6 s warm for 1.7B, far worse cold). The weights then
-    /// stay resident once you dictate at all (~4.5 GB), which is also why nothing
-    /// pre-warms this at daemon boot: a gaze-only user never pays for them.
-    ///
-    /// The failure is stringified because `io::Error` is not `Clone` and every
-    /// later caller has to be handed the same one.
-    pub fn shared() -> std::io::Result<&'static Stt> {
-        static ENGINE: std::sync::OnceLock<Result<Stt, String>> = std::sync::OnceLock::new();
-        match ENGINE.get_or_init(|| {
-            let t0 = std::time::Instant::now();
-            let loaded = Stt::load().map_err(|e| e.to_string());
-            // Logged once per process: a second line here means the cache broke.
-            eprintln!("STT model loaded in {:.1?}", t0.elapsed());
-            loaded
-        }) {
-            Ok(stt) => Ok(stt),
-            Err(e) => Err(std::io::Error::other(e.clone())),
+    /// The active dictation worker owns its model. Once dictation is turned
+    /// off and the worker finishes, dropping it releases the model as well.
+    /// The next session reloads it; failed loads can also be retried.
+    pub fn for_session() -> std::io::Result<Self> {
+        let t0 = std::time::Instant::now();
+        let loaded = Self::load();
+        eprintln!("STT model load finished in {:.1?}", t0.elapsed());
+        loaded
+    }
+}
+
+#[cfg(all(test, feature = "whisper"))]
+mod tests {
+    #[test]
+    #[ignore = "loads the configured local Whisper model twice; no mic or pane delivery"]
+    fn whisper_model_is_released_and_can_be_reloaded() {
+        fn memory(label: &str) {
+            let output = std::process::Command::new("vmmap")
+                .args(["-summary", &std::process::id().to_string()])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let summary = String::from_utf8_lossy(&output.stdout);
+            let footprint = summary
+                .lines()
+                .find(|line| line.starts_with("Physical footprint:"))
+                .unwrap();
+            eprintln!("{label}: {footprint}");
+        }
+        memory("before load");
+        for session in 1..=2 {
+            let stt = super::Stt::for_session().unwrap();
+            memory(&format!("session {session} loaded"));
+            drop(stt);
+            memory(&format!("session {session} released"));
         }
     }
 }

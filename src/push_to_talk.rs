@@ -9,15 +9,16 @@ use core_foundation::{
     base::TCFType, boolean::CFBoolean, dictionary::CFDictionary, string::CFString,
 };
 use core_graphics::event::{
-    CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+    CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
     CGEventType, CallbackResult, EventField,
 };
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use cpal::traits::{DeviceTrait, StreamTrait};
 use objc::{class, msg_send, runtime::Object, sel, sel_impl};
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[link(name = "AppKit", kind = "framework")]
 unsafe extern "C" {}
@@ -62,6 +63,7 @@ pub struct PushToTalk(Arc<Shared>);
 enum KeyEvent {
     Press(String, u64),
     Release,
+    Discard,
     Cancel,
 }
 
@@ -80,6 +82,10 @@ fn space_action(down: bool, held: bool, eligible: bool) -> SpaceAction {
         (false, true, _) => SpaceAction::End,
         _ => SpaceAction::Pass,
     }
+}
+
+fn short_press(duration: Duration) -> bool {
+    duration < Duration::from_millis(250)
 }
 
 struct Recording {
@@ -241,12 +247,13 @@ fn key_monitor(
     let event_shared = shared.clone();
     let event_tx = tx.clone();
     let bundle = crate::config::get().push_to_talk_app.clone();
+    let press_context = Mutex::new(None::<(Instant, u64, String)>);
     CGEventTap::with_enabled(
         CGEventTapLocation::Session,
         CGEventTapPlacement::HeadInsertEventTap,
         CGEventTapOptions::Default,
         vec![CGEventType::KeyDown, CGEventType::KeyUp],
-        |_, event_type, event| {
+        |proxy, event_type, event| {
             if matches!(
                 event_type,
                 CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput
@@ -275,7 +282,7 @@ fn key_monitor(
                     if space_action(true, false, eligible) != SpaceAction::Begin {
                         return CallbackResult::Keep;
                     }
-                    let (_, pane) = tracker.snapshot();
+                    let (epoch, pane) = tracker.snapshot();
                     let Some(pane) = pane else {
                         return CallbackResult::Keep;
                     };
@@ -287,7 +294,9 @@ fn key_monitor(
                     }
                     let sequence = event_shared.sequence.fetch_add(1, Ordering::SeqCst) + 1;
                     event_shared.held.store(true, Ordering::SeqCst);
+                    *press_context.lock().unwrap() = Some((Instant::now(), epoch, pane.clone()));
                     if event_tx.send(KeyEvent::Press(pane, sequence)).is_err() {
+                        *press_context.lock().unwrap() = None;
                         event_shared.held.store(false, Ordering::SeqCst);
                         return CallbackResult::Keep;
                     }
@@ -304,7 +313,32 @@ fn key_monitor(
                     // mode switch cannot cancel an already released turn.
                     event_shared.pending.fetch_add(1, Ordering::SeqCst);
                     event_shared.held.store(false, Ordering::SeqCst);
-                    if event_tx.send(KeyEvent::Release).is_err() {
+                    let context = press_context.lock().unwrap().take();
+                    let short = context
+                        .as_ref()
+                        .is_some_and(|(at, _, _)| short_press(at.elapsed()));
+                    if short
+                        && let Some((_, epoch, pane)) = context
+                        && tracker.snapshot() == (epoch, Some(pane))
+                        && frontmost_bundle().as_deref() == Some(bundle.as_str())
+                    {
+                        for down in [true, false] {
+                            if let Ok(source) =
+                                CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+                                && let Ok(key) = CGEvent::new_keyboard_event(source, 49, down)
+                            {
+                                key.post_from_tap(proxy);
+                            }
+                        }
+                    }
+                    if event_tx
+                        .send(if short {
+                            KeyEvent::Discard
+                        } else {
+                            KeyEvent::Release
+                        })
+                        .is_err()
+                    {
                         event_shared.pending.fetch_sub(1, Ordering::SeqCst);
                     }
                     CallbackResult::Drop
@@ -341,9 +375,10 @@ fn key_monitor(
 
 #[cfg(test)]
 mod tests {
-    use super::{PushToTalk, Recording, Shared, SpaceAction, space_action};
+    use super::{PushToTalk, Recording, Shared, SpaceAction, short_press, space_action};
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
+    use std::time::Duration;
 
     #[test]
     fn space_is_captured_only_when_eligible_and_release_ends_even_after_focus_change() {
@@ -352,6 +387,12 @@ mod tests {
         assert_eq!(space_action(true, true, false), SpaceAction::SuppressRepeat);
         assert_eq!(space_action(false, true, false), SpaceAction::End);
         assert_eq!(space_action(false, false, true), SpaceAction::Pass);
+    }
+
+    #[test]
+    fn short_taps_end_before_the_recording_threshold() {
+        assert!(short_press(Duration::from_millis(249)));
+        assert!(!short_press(Duration::from_millis(250)));
     }
 
     #[test]
@@ -418,7 +459,7 @@ mod tests {
             samples,
             sample_rate: spec.sample_rate as usize,
         };
-        super::transcribe_and_deliver(super::stt::Stt::shared().unwrap(), job).unwrap();
+        super::transcribe_and_deliver(&super::stt::Stt::for_session().unwrap(), job).unwrap();
         let delivered = std::fs::read_to_string(&output).unwrap();
         assert!(delivered.starts_with("original-pane|"));
         assert!(delivered.len() > "original-pane|".len());
@@ -427,7 +468,10 @@ mod tests {
 }
 
 fn record_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<KeyEvent>) -> Result<(), String> {
-    let stt = stt::Stt::shared().map_err(|e| format!("speech model: {e}"))?;
+    let stt = stt::Stt::for_session().map_err(|e| format!("speech model: {e}"))?;
+    if shared.stop.load(Ordering::SeqCst) {
+        return Ok(());
+    }
     let host = cpal::default_host();
     let device = dictation::pick_device(&host).ok_or("no input device")?;
     let config = device.default_input_config().map_err(|e| e.to_string())?;
@@ -443,9 +487,8 @@ fn record_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<KeyEvent>) -> Result<(),
     let jobs_shared = shared.clone();
     std::thread::spawn(move || {
         while let Ok(job) = jobs_rx.recv() {
-            if let Err(e) = transcribe_and_deliver(stt, job) {
+            if let Err(e) = transcribe_and_deliver(&stt, job) {
                 eprintln!("push-to-talk transcription or delivery failed: {e}");
-                jobs_shared.error.store(true, Ordering::SeqCst);
             }
             jobs_shared.pending.fetch_sub(1, Ordering::SeqCst);
         }
@@ -512,6 +555,13 @@ fn record_loop(shared: &Arc<Shared>, rx: mpsc::Receiver<KeyEvent>) -> Result<(),
                 } else {
                     shared.pending.fetch_sub(1, Ordering::SeqCst);
                 }
+            }
+            Ok(KeyEvent::Discard) => {
+                buffer.lock().map_err(|e| e.to_string())?.finish();
+                drop(active_stream.take());
+                shared.recording.store(false, Ordering::SeqCst);
+                pane = None;
+                shared.pending.fetch_sub(1, Ordering::SeqCst);
             }
             Ok(KeyEvent::Cancel) => {
                 {

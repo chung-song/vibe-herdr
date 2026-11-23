@@ -244,17 +244,17 @@ fn hand_off(draft: &mut String, target: &Option<Result<crate::deliver::FocusedPa
     match target {
         Some(Ok(pane)) => match crate::deliver::deliver_to_original(pane, &text) {
             Ok(()) => eprintln!(
-                "[{}] focus moved; delivered to original {}; {} chars",
+                "[{}] focus moved; delivered to original {}: {:?}",
                 crate::stamp(),
                 pane.pane_id,
-                text.chars().count()
+                text
             ),
             Err(e) => eprintln!("[{}] focus moved; delivery failed: {e}", crate::stamp()),
         },
         _ => eprintln!(
-            "[{}] focus moved; no agent pane, discarded; {} chars",
+            "[{}] focus moved; no agent pane, discarded: {:?}",
             crate::stamp(),
-            text.chars().count()
+            text
         ),
     }
 }
@@ -336,7 +336,10 @@ pub(crate) fn worker_loop(
             return;
         }
     };
-    let stt = match Stt::shared() {
+    if stop.load(Ordering::SeqCst) {
+        return;
+    }
+    let stt = match Stt::for_session() {
         Ok(s) => s,
         Err(e) => {
             telemetry.error.store(true, Ordering::SeqCst);
@@ -344,6 +347,10 @@ pub(crate) fn worker_loop(
             return;
         }
     };
+    // Loading is synchronous: release immediately if switched off during it.
+    if stop.load(Ordering::SeqCst) {
+        return;
+    }
     eprintln!("STT ready; listening");
 
     let mut resampler = vad::Resampler::new(sample_rate);
@@ -354,7 +361,7 @@ pub(crate) fn worker_loop(
     // end-of-speech is the VAD hangover rather than hangover + whole-utterance
     // inference. `fed` mirrors the VAD's emitted mark, so the tail between the
     // last drain and completion can still be handed over before finishing.
-    let mut stream: Option<crate::stt::Stream<'static>> = None;
+    let mut stream: Option<crate::stt::Stream<'_>> = None;
     let mut fed = 0usize;
     let mut target: Option<Result<crate::deliver::FocusedPane, String>> = None;
     let mut target_epoch: Option<u64> = None;
@@ -498,9 +505,9 @@ pub(crate) fn worker_loop(
                                 continue;
                             }
                             eprintln!(
-                                "[{}] segment transcribed (rms {rms:.3}, peak {peak:.2}): {} chars",
+                                "[{}] segment transcribed (rms {rms:.3}, peak {peak:.2}): {:?}",
                                 crate::stamp(),
-                                text.chars().count()
+                                text.trim()
                             );
                             last_speech = std::time::Instant::now();
                             judge_retried = false;
@@ -526,10 +533,10 @@ pub(crate) fn worker_loop(
                                     // the captured destination still owns it.
                                     match crate::deliver::deliver_to_original(&pane, &body) {
                                         Ok(()) => eprintln!(
-                                            "[{}] end word; delivered to {}; {} chars",
+                                            "[{}] end word; delivered to {}: {:?}",
                                             crate::stamp(),
                                             pane.pane_id,
-                                            body.chars().count()
+                                            body
                                         ),
                                         Err(e) => {
                                             eprintln!("[{}] delivery failed: {e}", crate::stamp())
@@ -636,10 +643,10 @@ pub(crate) fn worker_loop(
                         eprintln!("[{}] delivery failed: {e}", crate::stamp());
                     } else {
                         eprintln!(
-                            "[{}] complete; delivered to {}; {} chars",
+                            "[{}] complete; delivered to {}: {:?}",
                             crate::stamp(),
                             pane.pane_id,
-                            text.chars().count()
+                            text
                         );
                     }
                     revision = revision.wrapping_add(1);
@@ -647,10 +654,10 @@ pub(crate) fn worker_loop(
                 }
                 Ok(complete) => {
                     eprintln!(
-                        "[{}] not submitted (complete={complete}, speaking={}); waiting: {} chars",
+                        "[{}] not submitted (complete={complete}, speaking={}); waiting: {:?}",
                         crate::stamp(),
                         vad.in_speech(),
-                        draft.chars().count()
+                        draft
                     );
                     telemetry.waiting.store(!draft.is_empty(), Ordering::SeqCst);
                 }
@@ -683,11 +690,11 @@ pub(crate) fn worker_loop(
             match &target {
                 Some(Ok(pane)) => match crate::deliver::deliver_to_original(pane, &text) {
                     Ok(()) => eprintln!(
-                        "[{}] unsent draft expired after {}s of silence; delivered to {}; {} chars",
+                        "[{}] unsent draft expired after {}s of silence; delivered to {}: {:?}",
                         crate::stamp(),
                         draft_ttl.as_secs(),
                         pane.pane_id,
-                        text.chars().count()
+                        text
                     ),
                     Err(e) => eprintln!(
                         "[{}] unsent draft expired; delivery failed: {e}",
@@ -695,9 +702,9 @@ pub(crate) fn worker_loop(
                     ),
                 },
                 _ => eprintln!(
-                    "[{}] unsent draft expired; no agent pane, discarded; {} chars",
+                    "[{}] unsent draft expired; no agent pane, discarded: {:?}",
                     crate::stamp(),
-                    text.chars().count()
+                    text
                 ),
             }
             target = None;

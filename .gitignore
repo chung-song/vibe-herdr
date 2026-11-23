@@ -1,18 +1,7 @@
-/target/
-/config.toml
-/glossary.txt
+/target
+/target-*/
 /corrections.tsv
+/config.toml
 /jev.key
-*.key
-*.pem
-*.env
-.env*
-*.log
-*.wav
-*.onnx
-*.bin
-*.part
-.DS_Store
+/glossary.txt
 __pycache__/
-PRIVATE_PREP_NOTES.md
-# Keep example files in examples/; no live credentials or device configuration here.
