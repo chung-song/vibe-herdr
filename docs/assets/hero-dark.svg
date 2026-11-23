@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="580" viewBox="0 0 1280 580" fill="none" role="img" aria-labelledby="title description">
+<title id="title">vibe-herdr — less typing, more building</title>
+<desc id="description">An original illustration of a Space key turning speech into a coding-agent prompt. This is a workflow illustration, not an application screenshot.</desc>
+<defs>
+ <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" stroke="#536052" stroke-width=".6" opacity=".27"/></pattern>
+ <linearGradient id="cap" x1="900" y1="205" x2="900" y2="335" gradientUnits="userSpaceOnUse"><stop stop-color="#FFE4C7"/><stop offset="1" stop-color="#F3B47F"/></linearGradient>
+ <linearGradient id="edge" x1="900" y1="286" x2="900" y2="371" gradientUnits="userSpaceOnUse"><stop stop-color="#C97646"/><stop offset="1" stop-color="#9B4D2E"/></linearGradient>
+</defs>
+<rect x=".5" y=".5" width="1279" height="579" rx="22" fill="#151916" stroke="#536052" stroke-opacity=".35"/>
+<rect x="1" y="1" width="1278" height="578" rx="22" fill="url(#grid)"/>
+<g font-family="Arial, Helvetica, sans-serif">
+ <g fill="#FFB783"><rect x="64" y="54" width="5" height="14" rx="2.5"/><rect x="74" y="47" width="5" height="28" rx="2.5"/><rect x="84" y="42" width="5" height="38" rx="2.5"/><rect x="94" y="49" width="5" height="24" rx="2.5"/><rect x="104" y="55" width="5" height="12" rx="2.5"/></g>
+ <text x="124" y="66" fill="#A3ABA1" font-size="12" font-weight="700" letter-spacing="2.4">VOICE IN. PROMPT OUT.</text>
+ <text x="64" y="206" fill="#F4F3EB" font-size="72" font-weight="700" letter-spacing="-3.6">Less typing.</text>
+ <text x="64" y="290" fill="#FFB783" font-size="72" font-weight="700" letter-spacing="-3.6">More building.</text>
+ <text x="67" y="347" fill="#F4F3EB" font-size="22" letter-spacing="-.3">Hold Space. Say the next move.</text>
+ <text x="67" y="381" fill="#A3ABA1" font-size="18">Release to prompt your coding agent.</text>
+ <path d="M64 447H475" stroke="#536052" stroke-opacity=".65"/>
+ <text x="67" y="480" fill="#A3ABA1" font-size="13" font-weight="700" letter-spacing="1.8">HERDR  /  GHOSTTY  /  macOS</text>
+ <text x="67" y="512" fill="#A3ABA1" font-size="14">Local Whisper · Original-pane delivery</text>
+ <rect x="658" y="159.0" width="7" height="12" rx="3.5" fill="#FFB783" opacity="0.54"/><rect x="680" y="155.0" width="7" height="20" rx="3.5" fill="#FFB783" opacity="0.59"/><rect x="702" y="148.0" width="7" height="34" rx="3.5" fill="#FFB783" opacity="0.63"/><rect x="724" y="137.0" width="7" height="56" rx="3.5" fill="#FFB783" opacity="0.68"/><rect x="746" y="144.0" width="7" height="42" rx="3.5" fill="#FFB783" opacity="0.73"/><rect x="768" y="151.0" width="7" height="28" rx="3.5" fill="#FFB783" opacity="0.77"/><rect x="790" y="135.0" width="7" height="60" rx="3.5" fill="#FFB783" opacity="0.82"/><rect x="812" y="121.0" width="7" height="88" rx="3.5" fill="#FFB783" opacity="0.86"/><rect x="834" y="138.0" width="7" height="54" rx="3.5" fill="#FFB783" opacity="0.91"/><rect x="856" y="149.0" width="7" height="32" rx="3.5" fill="#FFB783" opacity="0.95"/><rect x="878" y="127.0" width="7" height="76" rx="3.5" fill="#FFB783" opacity="1.00"/><rect x="900" y="109.0" width="7" height="112" rx="3.5" fill="#FFB783" opacity="0.95"/><rect x="922" y="131.0" width="7" height="68" rx="3.5" fill="#FFB783" opacity="0.91"/><rect x="944" y="146.0" width="7" height="38" rx="3.5" fill="#FFB783" opacity="0.86"/><rect x="966" y="136.0" width="7" height="58" rx="3.5" fill="#FFB783" opacity="0.82"/><rect x="988" y="120.0" width="7" height="90" rx="3.5" fill="#FFB783" opacity="0.77"/><rect x="1010" y="137.0" width="7" height="56" rx="3.5" fill="#FFB783" opacity="0.73"/><rect x="1032" y="152.0" width="7" height="26" rx="3.5" fill="#FFB783" opacity="0.68"/><rect x="1054" y="145.0" width="7" height="40" rx="3.5" fill="#FFB783" opacity="0.63"/><rect x="1076" y="154.0" width="7" height="22" rx="3.5" fill="#FFB783" opacity="0.59"/><rect x="1098" y="159.0" width="7" height="12" rx="3.5" fill="#FFB783" opacity="0.54"/>
+ <path d="M648 303L1065 233L1195 300L776 376Z" fill="#000" opacity=".14"/>
+ <path d="M642 262L1072 191L1196 251L765 326Z" fill="url(#cap)" stroke="#EDB68F" stroke-width="2" stroke-linejoin="round"/>
+ <path d="M765 326L1196 251L1196 291Q1196 303 1184 307L778 377Q765 379 765 365Z" fill="url(#edge)" stroke="#A25C37" stroke-width="1.5" stroke-linejoin="round"/>
+ <path d="M642 262L765 326V365Q765 379 752 371L650 319Q642 315 642 305Z" fill="#D98A54" stroke="#BD7345" stroke-width="1.5" stroke-linejoin="round"/>
+ <path d="M664 263L1070 208L1170 252" stroke="#FFF2E1" stroke-width="2" stroke-linecap="round" opacity=".85"/>
+ <g transform="translate(862 282) rotate(-9)"><text x="0" y="0" fill="#6B3825" font-size="30" font-weight="700" letter-spacing="7">SPACE</text></g>
+ <path d="M917 356V389Q917 402 930 402H955" stroke="#FFB783" stroke-width="2" stroke-dasharray="4 6"/>
+ <path d="M950 397L956 402L950 407" stroke="#FFB783" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+ <rect x="704" y="424" width="492" height="107" rx="13" fill="#202720" stroke="#4E5C4A"/>
+ <circle cx="727" cy="447" r="3.5" fill="#FFB783"/>
+ <text x="739" y="451" fill="#ABB9A3" font-size="10" letter-spacing="1.6">YOUR ORIGINAL AGENT PANE</text>
+ <text x="727" y="483" fill="#FFB783" font-size="18" font-family="Menlo, Consolas, monospace">❯</text>
+ <text x="750" y="483" fill="#F2F1E8" font-size="15" font-family="Menlo, Consolas, monospace">Refactor this function.</text>
+ <text x="750" y="509" fill="#F2F1E8" font-size="15" font-family="Menlo, Consolas, monospace">Add a regression test.</text>
+ <text x="1196" y="556" text-anchor="end" fill="#A3ABA1" font-size="10" letter-spacing="1.4">ILLUSTRATED PUSH-TO-TALK WORKFLOW</text>
+</g>
+</svg>

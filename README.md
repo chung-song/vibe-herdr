@@ -1,26 +1,47 @@
-# vibe-herdr
+<h1 align="center">vibe-herdr</h1>
 
-**Speak your next prompt. Keep coding in Herdr.**
+<p align="center">
+  <strong>Your voice. Your coding flow.</strong><br>
+  Hold Space to speak. Release to prompt your coding agent in Herdr.
+</p>
 
-Voice input for coding agents inside Herdr. Hold **Space** to speak, then release it to transcribe and submit your prompt to the agent pane you started in.
+<p align="center">
+  <a href="https://github.com/chung-song/vibe-herdr/actions/workflows/ci.yml"><img src="https://github.com/chung-song/vibe-herdr/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-EBAA79?labelColor=252B24" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-EBAA79?labelColor=252B24" alt="macOS Apple Silicon">
+  <img src="https://img.shields.io/badge/transcription-local%20Whisper-EBAA79?labelColor=252B24" alt="Local Whisper transcription">
+</p>
 
-Built for **macOS Apple Silicon + Ghostty + Herdr**. Speech recognition runs locally with Whisper. An optional automatic mode uses a remote completion classifier. This is a community fork of [RanolP/herdr-handsfree](https://github.com/RanolP/herdr-handsfree), not an official Herdr release.
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="docs/setup.md">Setup guide</a> ·
+  <a href="docs/configuration.md">Configuration</a> ·
+  <a href="docs/privacy.md">Data &amp; privacy</a> ·
+  <a href="README.ko.md">한국어</a>
+</p>
 
-[![CI](https://github.com/chung-song/vibe-herdr/actions/workflows/ci.yml/badge.svg)](https://github.com/chung-song/vibe-herdr/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/hero-light.svg">
+  <img src="docs/assets/hero-light.svg" width="1280" alt="Illustrated push-to-talk flow: hold the Space key, speak, and send a transcript to the original coding-agent pane.">
+</picture>
 
-## What you can do
+<p align="center"><sub>Workflow illustration · Built for macOS Apple Silicon, Ghostty, and Herdr</sub></p>
 
-- **Hold Space to talk.** Release to transcribe the recording and submit it. This mode does not use the completion-classifier API.
-- **Keep the original destination.** Speech stays bound to the agent pane captured when recording begins, even if focus moves later.
-- **Use automatic dictation.** Voice activity detection segments speech; a completion classifier helps decide when a conversational turn is finished.
-- **Remember explicit corrections.** Save a misrecognition and its intended text without training the model.
-- **Release model memory when off.** Turning dictation off unloads the speech model after in-flight work finishes. Turning it back on reloads the model.
-- **See the recording phase.** Optional pane accents distinguish voiced speech from other active phases.
+## Stay in the flow
+
+| You do | vibe-herdr does |
+| --- | --- |
+| **Hold Space and speak.** | Records while held; releasing transcribes and submits your prompt. |
+| **Move between agent panes.** | Keeps the recording bound to the pane captured at key-down. |
+| **Turn dictation off.** | Releases the speech model after in-flight work finishes. |
+| **Choose hands-free dictation.** | Uses voice detection and an optional remote turn-completion classifier. |
+
+Whisper transcription runs on your Mac. **Space mode needs no Jev API key.** Submitted prompts still use your coding agent's configured provider; automatic mode also sends text to TypeSafe Jev. [See the data flow →](docs/privacy.md)
 
 ## Quick start
 
-You need macOS Apple Silicon, Ghostty, a working Herdr installation, Rust/Cargo, CMake, and the Xcode command-line tools. The local setup was tested with Herdr 0.9.3; other versions and operating systems are not verified.
+Requires **macOS Apple Silicon, Ghostty, Herdr, Rust/Cargo, CMake, Python 3, and Xcode command-line tools**. Tested locally with Herdr 0.9.3.
 
 ```sh
 git clone https://github.com/chung-song/vibe-herdr.git
@@ -32,93 +53,31 @@ cp examples/config.toml ~/.config/herdr/plugins/config/ranolp.handsfree/config.t
 herdr plugin link "$(pwd)"
 ```
 
-The plugin keeps the upstream ID `ranolp.handsfree` for compatibility. If the upstream plugin is already linked, unlink that plugin before linking this fork. No prebuilt binary, model, or personal API key is included.
+Add [these two keybindings](examples/herdr-keybinding.toml) to your Herdr config, then run `herdr server reload-config`. If the upstream handsfree plugin is already linked, unlink it before linking this fork; both use the ID `ranolp.handsfree`.
 
-Add the following to your Herdr `config.toml`, normally at `~/.config/herdr/config.toml`. Check for shortcut conflicts first, then run `herdr server reload-config`.
+### Your first voice prompt
 
-```toml
-[[keys.command]]
-key = "prefix+d"
-type = "plugin_action"
-command = "ranolp.handsfree.toggle-dictation"
-description = "Toggle voice dictation"
+1. **Allow access.** Grant Microphone access, plus Accessibility access for the built `target/release/herdr-handsfree` executable.
+2. **Select Space mode.** With dictation off, use `prefix+shift+v` to select `space`. The initial mode is `auto`.
+3. **Start talking.** Toggle on with `prefix+d`. Wait for the model and recording readiness, hold Space in your Ghostty agent pane, speak, and release.
+4. **Done for now?** Toggle off with `prefix+d` to release the model. Let pending space-mode work finish before turning it off. Turn dictation off before switching modes.
 
-[[keys.command]]
-key = "prefix+shift+v"
-type = "plugin_action"
-command = "ranolp.handsfree.cycle-dictation-mode"
-description = "Switch dictation mode"
-```
+A Space press under 250 ms is treated as a regular space if the original pane remains focused. While enabled, this mode intercepts unmodified Space across Ghostty windows. See the [full setup guide](docs/setup.md) for permissions, microphone startup, and troubleshooting.
 
-### Talk with Space
+## Make it yours
 
-1. Allow **Microphone** access when macOS asks. Allow **Accessibility** access for the built `target/release/herdr-handsfree` executable in System Settings → Privacy & Security → Accessibility.
-2. With dictation **off**, press `prefix+shift+v` to select `space` mode. The initial mode is `auto`; the selected mode persists across daemon restarts.
-3. Press `prefix+d` to enable dictation. Wait for the model to load.
-4. Focus your coding-agent pane in Ghostty. Hold the unmodified Space key; wait for recording to start before speaking. Release to transcribe and submit.
-5. Press `prefix+d` to turn dictation off when finished. To change modes, turn dictation off first.
+- **Microphone and model:** start with [the example config](examples/config.toml).
+- **Names and vocabulary:** add recognition hints to [a glossary](examples/glossary.txt).
+- **Repeated misrecognitions:** save [explicit text corrections](docs/configuration.md#explicit-corrections).
+- **Hands-free mode:** configure [automatic dictation](docs/configuration.md#automatic-mode), tuned for Korean conversational turns. Unsent drafts can be submitted after a silence timeout even when its classifier fails.
+- **Status and accents:** enable [optional recording feedback](docs/configuration.md#optional-status-display).
 
-A Space press shorter than 250 ms is treated as a regular space when focus remains on the same pane. Modifier shortcuts such as Command-Space are not intercepted. While this mode is on, it intercepts Space in **any Ghostty window**, not only a specific tab. Recording or pending transcription must finish before this mode can be turned off.
+## Help shape it
 
-If a rebuilt executable loses Accessibility access, remove its old entry and add the current executable again. Bluetooth microphone startup can take time. Model reload time depends on the model, disk cache, and available memory.
+Tried another microphone, Herdr version, or language? [Tell us what worked](https://github.com/chung-song/vibe-herdr/issues/new). For changes, see [Contributing](CONTRIBUTING.md). Remove private transcripts and keys from reports.
 
-## Configuration
+If this fits your workflow, a star helps other Herdr users find it.
 
-Start with [examples/config.toml](examples/config.toml). Put personal settings in the plugin config directory, outside the repository.
+---
 
-```toml
-whisper_model = "small"
-language = "ko"
-vad = "silero"
-microphone = ""          # Empty uses the macOS default input
-input_gain = 1.0
-min_speech_rms = 0.0
-phase_accent = false
-end_word = ""
-```
-
-The documented build selects Whisper with Metal on macOS. Cargo's upstream default backend is Qwen3-ASR, so keep `--no-default-features --features whisper` when following this guide. Models download on first use. `small` is roughly 487 MB on disk; larger models use more memory.
-
-Microphone, language, VAD, and model settings are read by the daemon and require a restart. `glossary.txt` and `corrections.tsv` are reread for each transcript. Glossary entries are recognition hints, not guaranteed spelling overrides. The RMS threshold filters quiet audio; it does not cancel background speech or music.
-
-### Optional automatic mode
-
-Automatic mode is tuned for Korean conversational turns. It sends buffered transcripts to **TypeSafe Jev** to judge whether you have finished speaking. It requires your own TypeSafe API key in `jev.key` inside the private plugin config directory; set owner-only permissions with `chmod 600 jev.key`.
-
-Select `auto` while dictation is off, then enable dictation with `prefix+d`. Saying the configured `end_word` can force submission. If the classifier fails or says the turn is incomplete, an unsent draft is still submitted after 15 seconds of silence, or 60 seconds when an end word is configured. Turning automatic dictation off discards pending, unsent speech.
-
-### Save a correction
-
-```sh
-HERDR_PLUGIN_CONFIG_DIR="$(herdr plugin config-dir ranolp.handsfree)"   target/release/herdr-handsfree add-correction "wrong text" "correct text"
-```
-
-Corrections are literal and case-sensitive. They apply in both modes, do not train the model, and can be edited in `corrections.tsv`. See [examples/glossary.txt](examples/glossary.txt) for recognition hints and [scripts/handsfree-status.py](scripts/handsfree-status.py) for an optional status display.
-
-## Where your data goes
-
-| Step | Destination |
-| --- | --- |
-| Speech recognition | Local Whisper model on your Mac |
-| Space mode completion | No Jev request |
-| Automatic mode completion | Buffered transcript sent to TypeSafe Jev over HTTPS |
-| Submitted prompt | Herdr's selected coding agent and its configured provider |
-| Diagnostics | Local daemon logs, which can contain recognized text |
-
-This is not an entirely offline assistant: coding agents may use remote providers, and automatic mode sends transcripts to TypeSafe. Keep keys, personal corrections, glossary files, and daemon logs private. Models download from upstream Hugging Face/GitHub URLs over HTTPS without pinned checksums. Review upstream model licenses before redistributing them.
-
-## Development
-
-```sh
-cargo test --no-default-features --features whisper -- --skip wav_through_vad_and_stt
-python3 -m unittest discover -s tests -p 'test_switch_dictation_mode.py'
-git diff --check
-```
-
-The excluded English audio fixture has a known exact-transcript mismatch on the development machine. Tests marked ignored require a local model, microphone-related integration setup, or paid classifier access. Passing the default suite does not establish microphone accuracy or live provider delivery. The upstream gaze implementation remains in the source, but the plugin manifest exposes dictation actions only.
-
-If you try this with another microphone, Herdr version, or language, an issue with your setup and reproduction steps is welcome. Remove transcripts and credentials from logs before sharing them.
-
-## Credits and license
-
-Based on [RanolP/herdr-handsfree](https://github.com/RanolP/herdr-handsfree). The upstream MIT license and copyright notice are preserved. See [LICENSE](LICENSE) and [PROVENANCE.md](PROVENANCE.md).
+A community fork of [RanolP/herdr-handsfree](https://github.com/RanolP/herdr-handsfree). Not an official Herdr release. [MIT license](LICENSE) · [Source &amp; attribution](PROVENANCE.md)
