@@ -5,3 +5,10 @@
 /jev.key
 /glossary.txt
 __pycache__/
+
+# Private preparation material and runtime credentials
+PRIVATE_PREP_NOTES.md
+.env
+.env.*
+*.key
+*.log

@@ -1,13 +1,40 @@
-# Local Herdr handsfree — Whisper dictation
+# vibe-herdr
 
-Local fork of RanolP/herdr-handsfree at upstream commit `61ee20b724ac2b17d63998a41ae9960e4361e7e3`. Herdr 0.9.3 on macOS Apple Silicon. The locally linked manifest has no download/build hook, exposes only `ranolp.handsfree.toggle-dictation`, and runs a locally compiled binary. The binary still contains the upstream gaze implementation, but it has no Herdr action or pane binding.
+**Speak your next prompt. Keep coding in Herdr.**
 
-Build and link:
+Voice input for coding agents inside Herdr. Hold **Space** to speak, then release it to transcribe and submit your prompt to the agent pane you started in.
 
-    cargo build --release --no-default-features --features whisper
-    herdr plugin link "$(pwd)"
+Built for **macOS Apple Silicon + Ghostty + Herdr**. Speech recognition runs locally with Whisper. An optional automatic mode uses a remote completion classifier. This is a community fork of [RanolP/herdr-handsfree](https://github.com/RanolP/herdr-handsfree), not an official Herdr release.
 
-To use the same behavior on another Mac, install Rust, CMake and Herdr, clone this repository, and run the commands above from the clone. Add the following to `~/.config/herdr/config.toml` and reload Herdr's config:
+[![CI](https://github.com/chung-song/vibe-herdr/actions/workflows/ci.yml/badge.svg)](https://github.com/chung-song/vibe-herdr/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+## What you can do
+
+- **Hold Space to talk.** Release to transcribe the recording and submit it. This mode does not use the completion-classifier API.
+- **Keep the original destination.** Speech stays bound to the agent pane captured when recording begins, even if focus moves later.
+- **Use automatic dictation.** Voice activity detection segments speech; a completion classifier helps decide when a conversational turn is finished.
+- **Remember explicit corrections.** Save a misrecognition and its intended text without training the model.
+- **Release model memory when off.** Turning dictation off unloads the speech model after in-flight work finishes. Turning it back on reloads the model.
+- **See the recording phase.** Optional pane accents distinguish voiced speech from other active phases.
+
+## Quick start
+
+You need macOS Apple Silicon, Ghostty, a working Herdr installation, Rust/Cargo, CMake, and the Xcode command-line tools. The local setup was tested with Herdr 0.9.3; other versions and operating systems are not verified.
+
+```sh
+git clone https://github.com/chung-song/vibe-herdr.git
+cd vibe-herdr
+cargo build --release --no-default-features --features whisper
+
+mkdir -p ~/.config/herdr/plugins/config/ranolp.handsfree
+cp examples/config.toml ~/.config/herdr/plugins/config/ranolp.handsfree/config.toml
+herdr plugin link "$(pwd)"
+```
+
+The plugin keeps the upstream ID `ranolp.handsfree` for compatibility. If the upstream plugin is already linked, unlink that plugin before linking this fork. No prebuilt binary, model, or personal API key is included.
+
+Add the following to your Herdr `config.toml`, normally at `~/.config/herdr/config.toml`. Check for shortcut conflicts first, then run `herdr server reload-config`.
 
 ```toml
 [[keys.command]]
@@ -23,42 +50,75 @@ command = "ranolp.handsfree.cycle-dictation-mode"
 description = "Switch dictation mode"
 ```
 
-`prefix+d` turns dictation on or off. Press `prefix+shift+v` to switch between `auto` and `space` while idle; it preserves the on/off state. The switch is refused during speech or transcription. The selected mode persists across daemon restarts. In `space` mode, hold the unmodified space bar in Ghostty to record, then release it to transcribe the complete recording and submit it to the agent pane selected at key-down; Jev is not used in this mode. The microphone stream is opened on press and closed on release. Allow macOS Accessibility access for the `herdr-handsfree` executable before selecting this mode. Because this monitors the frontmost Ghostty application rather than one specific tab, space is intercepted in any Ghostty window while the mode is on; short taps are sent as spaces when the focus remains on the same pane. Modifier shortcuts such as Command-Space are not intercepted. A press shorter than 250 ms inserts a space instead of starting transcription; longer presses record speech. Bluetooth microphone startup can take time, so wait for the red indicator before speaking. Background transcription and pending delivery prevent turning this mode off until they finish. This does not change the automatic mode's cancel-on-toggle-off behavior.
+### Talk with Space
 
-To remember a confirmed misrecognition, run `HERDR_PLUGIN_CONFIG_DIR="$(herdr plugin config-dir ranolp.handsfree)" target/release/herdr-handsfree add-correction "wrong text" "correct text"`. The program stores explicit text pairs in `corrections.tsv` in the plugin config directory and rereads them for each transcript in both modes. Matching is literal and case-sensitive; an existing different correction must be edited in the file. Do not add an ambiguous replacement without considering other contexts. This is not automatic learning from conversations and does not train the recognition model.
+1. Allow **Microphone** access when macOS asks. Allow **Accessibility** access for the built `target/release/herdr-handsfree` executable in System Settings → Privacy & Security → Accessibility.
+2. With dictation **off**, press `prefix+shift+v` to select `space` mode. The initial mode is `auto`; the selected mode persists across daemon restarts.
+3. Press `prefix+d` to enable dictation. Wait for the model to load.
+4. Focus your coding-agent pane in Ghostty. Hold the unmodified Space key; wait for recording to start before speaking. Release to transcribe and submit.
+5. Press `prefix+d` to turn dictation off when finished. To change modes, turn dictation off first.
 
-Create the plugin config directory `~/.config/herdr/plugins/config/ranolp.handsfree/` and put your own TypeSafe API key in `jev.key` there with owner-only permissions (`chmod 600 jev.key`). Never commit the key. For a standalone daemon, set `HERDR_PLUGIN_CONFIG_DIR` to that directory; without it the program uses `~/.config/herdr-handsfree/`. Add a `config.toml` in that directory if you want non-default settings. For example:
+A Space press shorter than 250 ms is treated as a regular space when focus remains on the same pane. Modifier shortcuts such as Command-Space are not intercepted. While this mode is on, it intercepts Space in **any Ghostty window**, not only a specific tab. Recording or pending transcription must finish before this mode can be turned off.
+
+If a rebuilt executable loses Accessibility access, remove its old entry and add the current executable again. Bluetooth microphone startup can take time. Model reload time depends on the model, disk cache, and available memory.
+
+## Configuration
+
+Start with [examples/config.toml](examples/config.toml). Put personal settings in the plugin config directory, outside the repository.
 
 ```toml
-whisper_model = "large-v3-turbo-q5_0"
+whisper_model = "small"
 language = "ko"
 vad = "silero"
-min_speech_rms = 0.015
-input_gain = 3.0
-end_word = "이상"
-phase_accent = true
+microphone = ""          # Empty uses the macOS default input
+input_gain = 1.0
+min_speech_rms = 0.0
+phase_accent = false
+end_word = ""
 ```
 
-The microphone defaults to the system input unless `microphone` is set. The example gain and level threshold suit the original setup and may need adjustment. The optional tab-bar status script mentioned below is local configuration and is not included in this repository.
+The documented build selects Whisper with Metal on macOS. Cargo's upstream default backend is Qwen3-ASR, so keep `--no-default-features --features whisper` when following this guide. Models download on first use. `small` is roughly 487 MB on disk; larger models use more memory.
 
-The `--no-default-features` flag matters: default is Qwen3-ASR; `whisper` uses whisper-rs/whisper.cpp with Metal. The `small` multilingual ggml model (~487 MB) and silero VAD model download on first actual use. These model files come from upstream Hugging Face and GitHub URLs in `src/models.rs` (no pinned digest); builds and models are not cryptographically verified beyond HTTPS. The release binary is built locally; do not use upstream's prebuilt release download hook.
+Microphone, language, VAD, and model settings are read by the daemon and require a restart. `glossary.txt` and `corrections.tsv` are reread for each transcript. Glossary entries are recognition hints, not guaranteed spelling overrides. The RMS threshold filters quiet audio; it does not cancel background speech or music.
 
-On the original Mac, `config.toml` selects `large-v3`, Korean, and `DJI Mic Mini-D14997`. The microphone and gain settings are machine-specific. Earlier tests found JBL Charge 4 audio dropouts when the DJI Bluetooth microphone was open; the underlying mechanism was not measured. `min_speech_rms` adds a minimum level alongside Silero's speech probability. This is a level filter, not acoustic echo cancellation, and cannot reliably separate the user's voice from loud media. Edit `glossary.txt` in the config directory, one name per line (comments start with `#`). The glossary is re-read for each utterance and is a probabilistic recognition hint, not a guaranteed spelling override. Changing model/mic/VAD/language requires a daemon restart; glossary edits do not. The speech model is owned by the active dictation session, rather than cached for the daemon lifetime. Turning dictation off releases it once any in-flight load or transcription finishes; the next toggle-on reloads it. Both automatic and space dictation follow this policy.
+### Optional automatic mode
 
-Shortcut: `Ctrl+B`, then `d` (`prefix+d`) toggles listening across Herdr agent panes. The Herdr tab-bar status script shows `🎙 ON`, `🎙 OFF`, or `🎙 ?`; Herdr 0.9.3 command widgets do not expose a click action, so `prefix+d` remains the toggle. The pane accent is red only on voiced VAD frames and orange for every other active phase, including listening, settling, transcription, checking, waiting, and error; dictation off restores the theme. Red changes to orange on the first unvoiced frame. Speech remains bound to the agent pane captured at onset across focus changes and transcription, then is delivered to that original pane rather than the newly focused one. The VAD end-of-speech debounce is approximately 1.5 seconds; switching panes during the silent settling interval flushes the old utterance early. You can therefore switch as soon as red turns orange; actual text insertion still waits for transcription and turn processing. The focus monitor polls every 50 ms, so extremely fast focus changes may not be observed. Toggle off to discard pending drafts. `prefix+shift+d` remains Herdr's close-workspace shortcut. An OS microphone permission prompt may require manual approval. The `DJI Mic Mini-D14997` input remains selected; its JBL Bluetooth output dropouts are not solved by this change.
+Automatic mode is tuned for Korean conversational turns. It sends buffered transcripts to **TypeSafe Jev** to judge whether you have finished speaking. It requires your own TypeSafe API key in `jev.key` inside the private plugin config directory; set owner-only permissions with `chmod 600 jev.key`.
 
-The completion classifier sends buffered transcripts to TypeSafe Jev's HTTPS API. The owner-only `jev.key` file supplies the credential. On an API failure or an incomplete verdict the draft waits for more speech; after 15 seconds of silence, or 60 seconds when an end word is configured, the draft is delivered to its original pane. Saying the configured end word forces delivery sooner. The daemon log can contain recognized transcripts and should be treated as private.
+Select `auto` while dictation is off, then enable dictation with `prefix+d`. Saying the configured `end_word` can force submission. If the classifier fails or says the turn is incomplete, an unsent draft is still submitted after 15 seconds of silence, or 60 seconds when an end word is configured. Turning automatic dictation off discards pending, unsent speech.
 
-Validation:
+### Save a correction
 
-    cargo test --no-default-features --features whisper -- --skip wav_through_vad_and_stt
-    HERDR_PLUGIN_CONFIG_DIR=/Users/eroh3000/.config/herdr/plugins/config/ranolp.handsfree cargo test --no-default-features --features whisper --bin herdr-handsfree jev_classifies_an_unfinished_and_a_complete_turn -- --ignored
-    cargo test --no-default-features --features whisper --bin herdr-handsfree synthesized_speech_crossing_panes_reaches_only_the_original_agent -- --ignored
-    herdr config check
-    herdr plugin action list --plugin ranolp.handsfree
+```sh
+HERDR_PLUGIN_CONFIG_DIR="$(herdr plugin config-dir ranolp.handsfree)"   target/release/herdr-handsfree add-correction "wrong text" "correct text"
+```
 
-On this Mac, `wav_through_vad_and_stt` fails its exact `hello world` transcript assertion and instead decodes `필로월드 디스위즈어 디테이션 테스트`; the Korean streaming/batch test passes. Jev API tests require user-provided credit and are ignored. The isolated synthesized-audio cross-pane test is also ignored and was not rerun for this patch; it uses a fake Herdr command and CPU Whisper and now asserts delivery only to the original pane, never to the newly focused pane.
+Corrections are literal and case-sensitive. They apply in both modes, do not train the model, and can be edited in `corrections.tsv`. See [examples/glossary.txt](examples/glossary.txt) for recognition hints and [scripts/handsfree-status.py](scripts/handsfree-status.py) for an optional status display.
 
-A synthetic Korean `say -v Yuna` WAV was successfully transcribed offline by the release binary with both tiny and small models, including after the added RMS gate. With the old laptop mic and no extra RMS gate, a live YouTube-background probe showed unintentional speech detection; switching to DJI Mic Mini alone still transcribed background speech in a 6-second probe. After adding `min_speech_rms = 0.01`, a bounded 6-second probe using DJI selected that device, loaded Whisper, reached `listening`, and produced no transcript. After the JBL dropout report, two bounded 8-second ffmpeg input-only trials reproduced dropouts with DJI and not with the built-in mic. A further plugin probe with the built-in mic reached `listening` and `speech`, produced no transcript in that short sample, and did not cause audible JBL dropout (user-confirmed). Delivery was deliberately disabled through `HERDR_BIN_PATH=/usr/bin/false` during plugin probes. These trials do not establish near-mic voice accuracy or reliable loud-media rejection; test with the user present. The plugin was left off and the normal daemon restored. Offline logs: `/Users/eroh3000/.hermes/cache/scratch/handsfree-small-smoke.log` (scratch may be pruned).
+## Where your data goes
 
-Rollback without touching unrelated config: remove the `prefix+d` `[[keys.command]]` block and only the `/Users/eroh3000/.config/herdr/handsfree-status.py` command entry in `tab_bar_right` from `/Users/eroh3000/.config/herdr/config.toml`, then `herdr server reload-config`; run the binary's `stop` subcommand with `HERDR_PLUGIN_STATE_DIR=/Users/eroh3000/.local/state/herdr/plugins/ranolp.handsfree` and `herdr plugin unlink ranolp.handsfree`. Then remove the unused status script if desired. Original config snapshot (101 lines) is `/Users/eroh3000/.config/herdr/config.toml.pre-handsfree-20260925.bak`, but do not blindly restore it after unrelated edits. Remove the model/config directories only if you explicitly want to discard cached models and glossary. Do not stop Herdr itself.
+| Step | Destination |
+| --- | --- |
+| Speech recognition | Local Whisper model on your Mac |
+| Space mode completion | No Jev request |
+| Automatic mode completion | Buffered transcript sent to TypeSafe Jev over HTTPS |
+| Submitted prompt | Herdr's selected coding agent and its configured provider |
+| Diagnostics | Local daemon logs, which can contain recognized text |
+
+This is not an entirely offline assistant: coding agents may use remote providers, and automatic mode sends transcripts to TypeSafe. Keep keys, personal corrections, glossary files, and daemon logs private. Models download from upstream Hugging Face/GitHub URLs over HTTPS without pinned checksums. Review upstream model licenses before redistributing them.
+
+## Development
+
+```sh
+cargo test --no-default-features --features whisper -- --skip wav_through_vad_and_stt
+python3 -m unittest discover -s tests -p 'test_switch_dictation_mode.py'
+git diff --check
+```
+
+The excluded English audio fixture has a known exact-transcript mismatch on the development machine. Tests marked ignored require a local model, microphone-related integration setup, or paid classifier access. Passing the default suite does not establish microphone accuracy or live provider delivery. The upstream gaze implementation remains in the source, but the plugin manifest exposes dictation actions only.
+
+If you try this with another microphone, Herdr version, or language, an issue with your setup and reproduction steps is welcome. Remove transcripts and credentials from logs before sharing them.
+
+## Credits and license
+
+Based on [RanolP/herdr-handsfree](https://github.com/RanolP/herdr-handsfree). The upstream MIT license and copyright notice are preserved. See [LICENSE](LICENSE) and [PROVENANCE.md](PROVENANCE.md).
